@@ -1,7 +1,52 @@
 #include <stdio.h>
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 // NOTE: Unity build
 #include "../../ツ.job.cpp"
+
+u32 window_width = 800;
+u32 window_height = 600;
+bool running = false;
+
+LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
+{
+    switch (message)
+    {
+    case WM_SIZE:
+        window_width = LOWORD(l_param);
+        window_height = HIWORD(l_param);
+        break;
+    case WM_CLOSE:
+        running = false;
+        break;
+    default:
+        return DefWindowProc(window, message, w_param, l_param);
+        break;
+    }
+
+    return 0;
+}
+
+HWND create_window()
+{
+    WNDCLASS window_class = {};
+    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    window_class.hInstance = GetModuleHandle(NULL);
+    window_class.lpszClassName = "Engine";
+    window_class.lpfnWndProc = window_callback;
+
+    if (!RegisterClass(&window_class))
+    {
+        // TODO: Logging
+        printf("Failed to register window class!\n");
+        return NULL;
+    }
+
+    return CreateWindowEx(0, window_class.lpszClassName, "Engine", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, window_width, window_height, 0, 0, window_class.hInstance, NULL);
+}
 
 struct Frame_Parameters
 {
@@ -60,11 +105,17 @@ JOB_ENTRY_POINT(gpu_entry_point)
 
 int main()
 {
-    printf("Hello World!\n");
+    HWND window_handle = create_window();
+    if (!window_handle)
+    {
+        // TODO: Logging
+        printf("Failed to create window!\n");
+    }
 
     // TODO: Get system thread count
     if (!init_job_system(8))
     {
+        // TODO: Logging
         printf("Failed to initialize job system!\n");
         return 1;
     }
@@ -79,9 +130,17 @@ int main()
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
 
-    bool running = true;
+    running = true;
+    MSG message;
+
     while (running)
     {
+        while (PeekMessage(&message, window_handle, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+        }
+
         current_frame->next->frame_number = current_frame->frame_number + 1;
         current_frame->game_counter = 1;
         current_frame->render_counter = 1;
