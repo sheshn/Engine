@@ -24,7 +24,7 @@ struct Fiber
     #define convert_thread_to_fiber() ConvertThreadToFiber(NULL)
     #define switch_fiber(current, next) SwitchToFiber((next)->handle)
 
-    static void init_fiber(Fiber* fiber, void* fiber_proc, void* data)
+    internal void init_fiber(Fiber* fiber, void* fiber_proc, void* data)
     {
         if (fiber->handle)
         {
@@ -76,7 +76,7 @@ struct Job_Queue
     u64            mask;
 };
 
-static void init_job_queue(Job_Queue* queue)
+internal void init_job_queue(Job_Queue* queue)
 {
     u64 max_jobs = sizeof(queue->jobs) / sizeof(queue->jobs[0]);
 
@@ -90,7 +90,7 @@ static void init_job_queue(Job_Queue* queue)
     }
 }
 
-static bool enqueue_job(Job_Queue* queue, Job job)
+internal bool enqueue_job(Job_Queue* queue, Job job)
 {
     u64 enqueue_index = queue->enqueue_index;
     while (true)
@@ -123,7 +123,7 @@ static bool enqueue_job(Job_Queue* queue, Job job)
     return false;
 }
 
-static bool dequeue_job(Job_Queue* queue, Job* job)
+internal bool dequeue_job(Job_Queue* queue, Job* job)
 {
     u64 dequeue_index = queue->dequeue_index;
     while (true)
@@ -180,9 +180,9 @@ struct Job_Scheduler_Thread
 #define MAX_QUEUE_COUNT  JOB_PRIORITY_HIGH + 1
 #define MAX_FIBER_COUNT  256
 
-static Job_Scheduler_Thread threads[MAX_THREAD_COUNT];
-static Job_Queue            queues[MAX_QUEUE_COUNT];
-static Job_Scheduler_Fiber  fibers[MAX_FIBER_COUNT];
+internal Job_Scheduler_Thread threads[MAX_THREAD_COUNT];
+internal Job_Queue            queues[MAX_QUEUE_COUNT];
+internal Job_Scheduler_Fiber  fibers[MAX_FIBER_COUNT];
 
 struct Job_Scheduler
 {
@@ -198,10 +198,10 @@ struct Job_Scheduler
     void* semaphore_handle;
 };
 
-static Job_Scheduler scheduler;
-static thread_local Job_Scheduler_Thread* scheduler_thread = NULL;
+internal Job_Scheduler scheduler;
+internal thread_local Job_Scheduler_Thread* scheduler_thread = NULL;
 
-static void insert_scheduler_fiber_into_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
+internal void insert_scheduler_fiber_into_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
 {
     if (!*list)
     {
@@ -218,7 +218,7 @@ static void insert_scheduler_fiber_into_list(Job_Scheduler_Fiber** list, Job_Sch
     }
 }
 
-static void remove_scheduler_fiber_from_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
+internal void remove_scheduler_fiber_from_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
 {
     if (fiber->next)
     {
@@ -237,7 +237,7 @@ static void remove_scheduler_fiber_from_list(Job_Scheduler_Fiber** list, Job_Sch
     fiber->previous = NULL;
 }
 
-static void spinlock_begin(volatile u32* lock)
+internal void spinlock_begin(volatile u32* lock)
 {
     while (true)
     {
@@ -254,13 +254,13 @@ static void spinlock_begin(volatile u32* lock)
     }
 }
 
-static void spinlock_end(volatile u32* lock)
+internal void spinlock_end(volatile u32* lock)
 {
     _mm_sfence();
     *lock = 0;
 }
 
-static Job_Scheduler_Fiber* get_free_fiber()
+internal Job_Scheduler_Fiber* get_free_fiber()
 {
     Job_Scheduler_Fiber* fiber = NULL;
 
@@ -279,7 +279,7 @@ static Job_Scheduler_Fiber* get_free_fiber()
     return fiber;
 }
 
-static Job_Scheduler_Fiber* get_finished_waiting_fiber()
+internal Job_Scheduler_Fiber* get_finished_waiting_fiber()
 {
     spinlock_begin(&scheduler.fibers_wait_list_lock);
 

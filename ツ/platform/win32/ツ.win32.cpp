@@ -7,9 +7,9 @@
 // NOTE: Unity build
 #include "../../ツ.job.cpp"
 
-u32 window_width = 800;
-u32 window_height = 600;
-bool running = false;
+global u32 window_width = 800;
+global u32 window_height = 600;
+global bool running = false;
 
 LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
