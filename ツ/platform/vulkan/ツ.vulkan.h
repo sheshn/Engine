@@ -1190,6 +1190,95 @@ typedef struct VkDeviceCreateInfo {
     const VkPhysicalDeviceFeatures*    pEnabledFeatures;
 } VkDeviceCreateInfo;
 
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSwapchainKHR)
+#define VK_KHR_SWAPCHAIN_EXTENSION_NAME "VK_KHR_swapchain"
+
+typedef enum VkSwapchainCreateFlagBitsKHR {
+    VK_SWAPCHAIN_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT_KHR = 0x00000001,
+    VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR = 0x00000002,
+    VK_SWAPCHAIN_CREATE_FLAG_BITS_MAX_ENUM_KHR = 0x7FFFFFFF
+} VkSwapchainCreateFlagBitsKHR;
+typedef VkFlags VkSwapchainCreateFlagsKHR;
+
+typedef enum VkImageUsageFlagBits {
+    VK_IMAGE_USAGE_TRANSFER_SRC_BIT = 0x00000001,
+    VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x00000002,
+    VK_IMAGE_USAGE_SAMPLED_BIT = 0x00000004,
+    VK_IMAGE_USAGE_STORAGE_BIT = 0x00000008,
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010,
+    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT = 0x00000020,
+    VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT = 0x00000040,
+    VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT = 0x00000080,
+    VK_IMAGE_USAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+} VkImageUsageFlagBits;
+typedef VkFlags VkImageUsageFlags;
+
+typedef enum VkSharingMode {
+    VK_SHARING_MODE_EXCLUSIVE = 0,
+    VK_SHARING_MODE_CONCURRENT = 1,
+    VK_SHARING_MODE_BEGIN_RANGE = VK_SHARING_MODE_EXCLUSIVE,
+    VK_SHARING_MODE_END_RANGE = VK_SHARING_MODE_CONCURRENT,
+    VK_SHARING_MODE_RANGE_SIZE = (VK_SHARING_MODE_CONCURRENT - VK_SHARING_MODE_EXCLUSIVE + 1),
+    VK_SHARING_MODE_MAX_ENUM = 0x7FFFFFFF
+} VkSharingMode;
+
+typedef enum VkPresentModeKHR {
+    VK_PRESENT_MODE_IMMEDIATE_KHR = 0,
+    VK_PRESENT_MODE_MAILBOX_KHR = 1,
+    VK_PRESENT_MODE_FIFO_KHR = 2,
+    VK_PRESENT_MODE_FIFO_RELAXED_KHR = 3,
+    VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR = 1000111000,
+    VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR = 1000111001,
+    VK_PRESENT_MODE_BEGIN_RANGE_KHR = VK_PRESENT_MODE_IMMEDIATE_KHR,
+    VK_PRESENT_MODE_END_RANGE_KHR = VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+    VK_PRESENT_MODE_RANGE_SIZE_KHR = (VK_PRESENT_MODE_FIFO_RELAXED_KHR - VK_PRESENT_MODE_IMMEDIATE_KHR + 1),
+    VK_PRESENT_MODE_MAX_ENUM_KHR = 0x7FFFFFFF
+} VkPresentModeKHR;
+
+typedef enum VkSurfaceTransformFlagBitsKHR {
+    VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR = 0x00000001,
+    VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR = 0x00000002,
+    VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR = 0x00000004,
+    VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR = 0x00000008,
+    VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR = 0x00000010,
+    VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR = 0x00000020,
+    VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR = 0x00000040,
+    VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR = 0x00000080,
+    VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR = 0x00000100,
+    VK_SURFACE_TRANSFORM_FLAG_BITS_MAX_ENUM_KHR = 0x7FFFFFFF
+} VkSurfaceTransformFlagBitsKHR;
+typedef VkFlags VkSurfaceTransformFlagsKHR;
+
+typedef enum VkCompositeAlphaFlagBitsKHR {
+    VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR = 0x00000001,
+    VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR = 0x00000002,
+    VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR = 0x00000004,
+    VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR = 0x00000008,
+    VK_COMPOSITE_ALPHA_FLAG_BITS_MAX_ENUM_KHR = 0x7FFFFFFF
+} VkCompositeAlphaFlagBitsKHR;
+typedef VkFlags VkCompositeAlphaFlagsKHR;
+
+typedef struct VkSwapchainCreateInfoKHR {
+    VkStructureType                  sType;
+    const void*                      pNext;
+    VkSwapchainCreateFlagsKHR        flags;
+    VkSurfaceKHR                     surface;
+    uint32_t                         minImageCount;
+    VkFormat                         imageFormat;
+    VkColorSpaceKHR                  imageColorSpace;
+    VkExtent2D                       imageExtent;
+    uint32_t                         imageArrayLayers;
+    VkImageUsageFlags                imageUsage;
+    VkSharingMode                    imageSharingMode;
+    uint32_t                         queueFamilyIndexCount;
+    const uint32_t*                  pQueueFamilyIndices;
+    VkSurfaceTransformFlagBitsKHR    preTransform;
+    VkCompositeAlphaFlagBitsKHR      compositeAlpha;
+    VkPresentModeKHR                 presentMode;
+    VkBool32                         clipped;
+    VkSwapchainKHR                   oldSwapchain;
+} VkSwapchainCreateInfoKHR;
+
 typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void);
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddr)(VkInstance instance, const char* pName);
 typedef VkResult (VKAPI_PTR *PFN_vkCreateInstance)(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
@@ -1202,6 +1291,7 @@ typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceFeatures)(VkPhysicalDevice physi
 typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceMemoryProperties)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties);
 typedef VkResult (VKAPI_PTR *PFN_vkCreateDevice)(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32* pSupported);
+typedef void (VKAPI_PTR *PFN_vkGetDeviceQueue)(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
 
 #define VK_FUNCTION(function) external PFN_##function function;
     #define VK_FUNCTIONS_PLATFORM          \
@@ -1223,6 +1313,10 @@ typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysica
         VK_FUNCTION(vkCreateDevice)                            \
         VK_FUNCTION(vkGetPhysicalDeviceSurfaceSupportKHR)
     VK_FUNCTIONS_INSTANCE
+
+    #define VK_FUNCTIONS_DEVICE       \
+        VK_FUNCTION(vkGetDeviceQueue)
+    VK_FUNCTIONS_DEVICE
 #undef VK_FUNCTION
 
 bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Arena* memory_arena);

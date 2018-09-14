@@ -17,3 +17,5 @@ typedef double   f64;
 #define external extern
 #define global   static
 
+#define U32_MAX 0xFFFFFFFF
+
