@@ -1,0 +1,68 @@
+#include "ツ.vulkan.win32.h"
+
+#define VK_FUNCTION(function) PFN_##function function;
+    VK_FUNCTIONS_PLATFORM
+	PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
+
+internal HMODULE vulkan_library;
+
+bool win32_init_vulkan(HWND window, VkInstance* vulkan_instance, VkSurfaceKHR* vulkan_surface)
+{
+    vulkan_library = LoadLibraryA("vulkan-1.dll");
+    if (vulkan_library == NULL)
+    {
+        // TODO: Logging
+        printf("Unable able to load Vulkan dll!\n");
+        return false;
+    }
+
+    vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)GetProcAddress(vulkan_library, "vkGetInstanceProcAddr");
+    vkCreateInstance = (PFN_vkCreateInstance)vkGetInstanceProcAddr(NULL, "vkCreateInstance");
+
+    VkApplicationInfo application_info = {};
+    application_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    application_info.pApplicationName = "win32.Engine";
+    application_info.applicationVersion = VK_MAKE_VERSION(0, 0, 1);
+    application_info.pEngineName = "win32.engine";
+    application_info.engineVersion = VK_MAKE_VERSION(0, 0, 1);
+
+    VkInstanceCreateInfo instance_create_info = {};
+    instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_create_info.pApplicationInfo = &application_info;
+
+    #if defined(DEBUG)
+        char* validation_layers[] = {"VK_LAYER_LUNARG_core_validation"};
+        char* enabled_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
+        instance_create_info.enabledLayerCount = 1;
+        instance_create_info.ppEnabledLayerNames = validation_layers;
+    #else
+        char* enabled_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    #endif
+
+    instance_create_info.enabledExtensionCount = sizeof(enabled_extensions) / sizeof(enabled_extensions[0]);
+    instance_create_info.ppEnabledExtensionNames = enabled_extensions;
+
+    if (vkCreateInstance(&instance_create_info, NULL, vulkan_instance) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan instance!\n");
+        return false;
+    }
+
+    vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(*vulkan_instance, "vkCreateWin32SurfaceKHR");
+
+    VkWin32SurfaceCreateInfoKHR surface_create_info = {};
+    surface_create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    surface_create_info.hwnd = window;
+    surface_create_info.hinstance = GetModuleHandle(NULL);
+
+    if (vkCreateWin32SurfaceKHR(*vulkan_instance, &surface_create_info, NULL, vulkan_surface) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan win32 surface!\n");
+        return false;
+    }
+
+    return true;
+}
+

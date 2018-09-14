@@ -6,6 +6,8 @@
 
 // NOTE: Unity build
 #include "../../ツ.job.cpp"
+#include "../vulkan/win32/ツ.vulkan.win32.cpp"
+#include "../vulkan/ツ.vulkan.cpp"
 
 global u32 window_width = 800;
 global u32 window_height = 600;
@@ -117,6 +119,15 @@ int main()
     {
         // TODO: Logging
         printf("Failed to initialize job system!\n");
+        return 1;
+    }
+
+    VkInstance vulkan_instance;
+    VkSurfaceKHR vulkan_surface;
+    if (!win32_init_vulkan(window_handle, &vulkan_instance, &vulkan_surface) || !init_renderer_vulkan(vulkan_instance, vulkan_surface))
+    {
+        // TODO: Logging
+        printf("Failed to initialize Vulkan!\n");
         return 1;
     }
 

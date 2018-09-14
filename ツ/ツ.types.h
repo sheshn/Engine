@@ -14,5 +14,6 @@ typedef float    f32;
 typedef double   f64;
 
 #define internal static
+#define external extern
 #define global   static
 
