@@ -14,6 +14,8 @@
 
 #define VK_MAX_PHYSICAL_DEVICE_NAME_SIZE  256
 #define VK_UUID_SIZE                      16
+#define VK_MAX_MEMORY_TYPES               32
+#define VK_MAX_MEMORY_HEAPS               16
 
 typedef uint32_t VkFlags;
 typedef uint32_t VkBool32;
@@ -727,6 +729,12 @@ typedef struct VkExtent2D {
     uint32_t    height;
 } VkExtent2D;
 
+typedef struct VkExtent3D {
+    uint32_t    width;
+    uint32_t    height;
+    uint32_t    depth;
+} VkExtent3D;
+
 typedef enum VkFormat {
     VK_FORMAT_UNDEFINED = 0,
     VK_FORMAT_R4G4_UNORM_PACK8 = 1,
@@ -1099,9 +1107,101 @@ typedef struct VkSurfaceFormatKHR {
     typedef VkResult (VKAPI_PTR *PFN_vkCreateDebugUtilsMessengerEXT)(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pMessenger);
 #endif
 
+typedef enum VkQueueFlagBits {
+    VK_QUEUE_GRAPHICS_BIT = 0x00000001,
+    VK_QUEUE_COMPUTE_BIT = 0x00000002,
+    VK_QUEUE_TRANSFER_BIT = 0x00000004,
+    VK_QUEUE_SPARSE_BINDING_BIT = 0x00000008,
+    VK_QUEUE_PROTECTED_BIT = 0x00000010,
+    VK_QUEUE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+} VkQueueFlagBits;
+typedef VkFlags VkQueueFlags;
+
+typedef struct VkQueueFamilyProperties {
+    VkQueueFlags    queueFlags;
+    uint32_t        queueCount;
+    uint32_t        timestampValidBits;
+    VkExtent3D      minImageTransferGranularity;
+} VkQueueFamilyProperties;
+
+typedef enum VkMemoryPropertyFlagBits {
+    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT = 0x00000001,
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT = 0x00000002,
+    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 0x00000004,
+    VK_MEMORY_PROPERTY_HOST_CACHED_BIT = 0x00000008,
+    VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT = 0x00000010,
+    VK_MEMORY_PROPERTY_PROTECTED_BIT = 0x00000020,
+    VK_MEMORY_PROPERTY_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+} VkMemoryPropertyFlagBits;
+typedef VkFlags VkMemoryPropertyFlags;
+
+typedef struct VkMemoryType {
+    VkMemoryPropertyFlags    propertyFlags;
+    uint32_t                 heapIndex;
+} VkMemoryType;
+
+typedef enum VkMemoryHeapFlagBits {
+    VK_MEMORY_HEAP_DEVICE_LOCAL_BIT = 0x00000001,
+    VK_MEMORY_HEAP_MULTI_INSTANCE_BIT = 0x00000002,
+    VK_MEMORY_HEAP_MULTI_INSTANCE_BIT_KHR = VK_MEMORY_HEAP_MULTI_INSTANCE_BIT,
+    VK_MEMORY_HEAP_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+} VkMemoryHeapFlagBits;
+typedef VkFlags VkMemoryHeapFlags;
+
+typedef struct VkMemoryHeap {
+    VkDeviceSize         size;
+    VkMemoryHeapFlags    flags;
+} VkMemoryHeap;
+
+typedef struct VkPhysicalDeviceMemoryProperties {
+    uint32_t        memoryTypeCount;
+    VkMemoryType    memoryTypes[VK_MAX_MEMORY_TYPES];
+    uint32_t        memoryHeapCount;
+    VkMemoryHeap    memoryHeaps[VK_MAX_MEMORY_HEAPS];
+} VkPhysicalDeviceMemoryProperties;
+
+typedef enum VkDeviceQueueCreateFlagBits {
+    VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT = 0x00000001,
+    VK_DEVICE_QUEUE_CREATE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+} VkDeviceQueueCreateFlagBits;
+typedef VkFlags VkDeviceQueueCreateFlags;
+
+typedef struct VkDeviceQueueCreateInfo {
+    VkStructureType             sType;
+    const void*                 pNext;
+    VkDeviceQueueCreateFlags    flags;
+    uint32_t                    queueFamilyIndex;
+    uint32_t                    queueCount;
+    const float*                pQueuePriorities;
+} VkDeviceQueueCreateInfo;
+
+typedef VkFlags VkDeviceCreateFlags;
+
+typedef struct VkDeviceCreateInfo {
+    VkStructureType                    sType;
+    const void*                        pNext;
+    VkDeviceCreateFlags                flags;
+    uint32_t                           queueCreateInfoCount;
+    const VkDeviceQueueCreateInfo*     pQueueCreateInfos;
+    uint32_t                           enabledLayerCount;
+    const char* const*                 ppEnabledLayerNames;
+    uint32_t                           enabledExtensionCount;
+    const char* const*                 ppEnabledExtensionNames;
+    const VkPhysicalDeviceFeatures*    pEnabledFeatures;
+} VkDeviceCreateInfo;
+
 typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void);
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddr)(VkInstance instance, const char* pName);
 typedef VkResult (VKAPI_PTR *PFN_vkCreateInstance)(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
+typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetDeviceProcAddr)(VkDevice device, const char* pName);
+typedef VkResult (VKAPI_PTR *PFN_vkEnumeratePhysicalDevices)(VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices);
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceQueueFamilyProperties)(VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties);
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceQueueFamilyProperties)(VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties);
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceProperties)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties);
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceFeatures)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures);
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceMemoryProperties)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties);
+typedef VkResult (VKAPI_PTR *PFN_vkCreateDevice)(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
+typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32* pSupported);
 
 #define VK_FUNCTION(function) external PFN_##function function;
     #define VK_FUNCTIONS_PLATFORM          \
@@ -1112,7 +1212,18 @@ typedef VkResult (VKAPI_PTR *PFN_vkCreateInstance)(const VkInstanceCreateInfo* p
     #define VK_FUNCTIONS_DEBUG \
         VK_FUNCTION(vkCreateDebugUtilsMessengerEXT)
     VK_FUNCTIONS_DEBUG
+
+    #define VK_FUNCTIONS_INSTANCE                              \
+        VK_FUNCTION(vkGetDeviceProcAddr)                       \
+        VK_FUNCTION(vkEnumeratePhysicalDevices)                \
+        VK_FUNCTION(vkGetPhysicalDeviceQueueFamilyProperties)  \
+        VK_FUNCTION(vkGetPhysicalDeviceProperties)             \
+        VK_FUNCTION(vkGetPhysicalDeviceFeatures)               \
+        VK_FUNCTION(vkGetPhysicalDeviceMemoryProperties)       \
+        VK_FUNCTION(vkCreateDevice)                            \
+        VK_FUNCTION(vkGetPhysicalDeviceSurfaceSupportKHR)
+    VK_FUNCTIONS_INSTANCE
 #undef VK_FUNCTION
 
-bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface);
+bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Arena* memory_arena);
 

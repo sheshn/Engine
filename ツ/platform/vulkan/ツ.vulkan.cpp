@@ -2,6 +2,7 @@
 
 #define VK_FUNCTION(function) PFN_##function function;
     VK_FUNCTIONS_DEBUG
+    VK_FUNCTIONS_INSTANCE
 #undef VK_FUNCTION
 
 internal VkDebugUtilsMessengerEXT debug_messenger;
@@ -42,16 +43,16 @@ struct Vulkan_Context
 
 internal Vulkan_Context vulkan_context;
 
-bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface)
+bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Arena* memory_arena)
 {
     vulkan_context.instance = instance;
     vulkan_context.surface = surface;
 
     #define VK_FUNCTION(function) function = (PFN_##function)vkGetInstanceProcAddr(vulkan_context.instance, #function);
+        VK_FUNCTIONS_INSTANCE
 
     #if defined(DEBUG)
         VK_FUNCTIONS_DEBUG
-        #undef VK_FUNCTION
 
         VkDebugUtilsMessengerCreateInfoEXT debug_create_info = {};
         debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
@@ -66,6 +67,23 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface)
             return false;
         }
     #endif
+    #undef VK_FUNCTION
+
+    u32 device_count = 0;
+    if (vkEnumeratePhysicalDevices(vulkan_context.instance, &device_count, NULL) != VK_SUCCESS || device_count == 0)
+    {
+        // TODO: Logging
+        printf("Error enumerating Vulkan physical devices!\n");
+        return false;
+    }
+
+    VkPhysicalDevice* physical_devices = memory_arena_reserve_array(memory_arena, VkPhysicalDevice, device_count);
+    if (vkEnumeratePhysicalDevices(vulkan_context.instance, &device_count, physical_devices) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Error enumerating Vulkan physical devices!\n");
+        return false;
+    }
 
     return true;
 }

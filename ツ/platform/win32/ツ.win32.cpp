@@ -4,6 +4,8 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include "../../ツ.platform.h"
+
 // NOTE: Unity build
 #include "../../ツ.job.cpp"
 #include "../vulkan/win32/ツ.vulkan.win32.cpp"
@@ -12,6 +14,11 @@
 global u32 window_width = 800;
 global u32 window_height = 600;
 global bool running = false;
+
+u8* allocate_memory(u64 size)
+{
+    return (u8*)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+}
 
 LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
@@ -107,6 +114,11 @@ JOB_ENTRY_POINT(gpu_entry_point)
 
 int main()
 {
+    u64 memory_size = 1 * 1024 * 1024 * 1024;
+    u8* platform_memory = allocate_memory(memory_size);
+
+    Memory_Arena platform_arena = {platform_memory, memory_size, 0};
+
     HWND window_handle = create_window();
     if (!window_handle)
     {
@@ -124,7 +136,7 @@ int main()
 
     VkInstance vulkan_instance;
     VkSurfaceKHR vulkan_surface;
-    if (!win32_init_vulkan(window_handle, &vulkan_instance, &vulkan_surface) || !init_renderer_vulkan(vulkan_instance, vulkan_surface))
+    if (!win32_init_vulkan(window_handle, &vulkan_instance, &vulkan_surface) || !init_renderer_vulkan(vulkan_instance, vulkan_surface, &platform_arena))
     {
         // TODO: Logging
         printf("Failed to initialize Vulkan!\n");
