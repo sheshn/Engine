@@ -1,6 +1,7 @@
 #pragma once
 
-#define VKAPI_PTR __stdcall
+#define VKAPI_CALL __stdcall
+#define VKAPI_PTR  VKAPI_CALL
 #include "../ツ.vulkan.h"
 
 #define WIN32_LEAN_AND_MEAN
