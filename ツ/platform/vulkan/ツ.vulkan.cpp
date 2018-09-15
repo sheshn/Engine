@@ -16,6 +16,8 @@ internal VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsE
     return false;
 }
 
+#define MAX_SWAPCHAIN_IMAGES 3
+
 struct Vulkan_Context
 {
     VkInstance                 instance;
@@ -37,8 +39,8 @@ struct Vulkan_Context
     VkSurfaceFormatKHR surface_format;
     VkSwapchainKHR     swapchain;
     VkExtent2D         swapchain_extent;
-    VkImage*           swapchain_images;
-    VkImageView*       swapchain_image_views;
+    VkImage            swapchain_images[MAX_SWAPCHAIN_IMAGES];
+    VkImageView        swapchain_image_views[MAX_SWAPCHAIN_IMAGES];
     u32                swapchain_image_count;
 
     // TODO: Improve renderer memory situation
@@ -256,7 +258,7 @@ bool recreate_swapchain(u32 width, u32 height)
         return false;
     }
 
-    u32 image_count = surface_capabilities.minImageCount + 1;
+    u32 image_count = min(surface_capabilities.minImageCount + 1, MAX_SWAPCHAIN_IMAGES);
     if (surface_capabilities.maxImageCount > 0 && image_count > surface_capabilities.maxImageCount)
     {
         image_count = surface_capabilities.maxImageCount;
@@ -331,21 +333,12 @@ bool recreate_swapchain(u32 width, u32 height)
         vkDestroyImageView(vulkan_context.device, vulkan_context.swapchain_image_views[i], NULL);
     }
 
-    // TODO: Need to have a better way of managing the memory for swapchain images and image views
-    // If image_count is greater than the old image_count we need to allocate more space for images and image views!
     vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, NULL);
-    if (vulkan_context.swapchain_images == NULL)
-    {
-        vulkan_context.swapchain_images = memory_arena_reserve_array(vulkan_context.memory_arena, VkImage, image_count);
-    }
 
-    vulkan_context.swapchain_image_count = image_count;
-    vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, vulkan_context.swapchain_images);
-
-    if (vulkan_context.swapchain_image_views == NULL)
-    {
-        vulkan_context.swapchain_image_views = memory_arena_reserve_array(vulkan_context.memory_arena, VkImageView, vulkan_context.swapchain_image_count);
-    }
+    // This might fail if image_count is greater than MAX_SWAPCHAIN_IMAGES! I don't know!
+    // This shouldn't be a problem since we will probably get exactly MAX_SWAPCHAIN_IMAGES images anyways
+    vulkan_context.swapchain_image_count = min(image_count, MAX_SWAPCHAIN_IMAGES);
+    vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, &vulkan_context.swapchain_images[0]);
 
     VkImageViewCreateInfo image_view_create_info = {};
     image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
