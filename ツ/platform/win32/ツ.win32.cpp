@@ -27,6 +27,7 @@ LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPAR
     case WM_SIZE:
         window_width = LOWORD(l_param);
         window_height = HIWORD(l_param);
+        renderer_resize(window_width, window_height);
         break;
     case WM_CLOSE:
         running = false;
@@ -142,6 +143,9 @@ int main()
         printf("Failed to initialize Vulkan!\n");
         return 1;
     }
+
+    // TODO: Pass window_width/window_height to init_renderer_vulkan and resize there?
+    renderer_resize(window_width, window_height);
 
     Frame_Parameters frames[16];
     for (u64 i = 0; i < 16; ++i)
