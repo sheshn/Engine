@@ -376,10 +376,5 @@ void renderer_resize(u32 window_width, u32 window_height)
         printf("Error creating Vulkan swapchain!\n");
         return;
     }
-    else
-    {
-        printf("Successfully recreated Vulkan swapchain\n");
-        return;
-    }
 }
 
