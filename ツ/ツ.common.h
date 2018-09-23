@@ -15,6 +15,19 @@ struct Memory_Arena
     u64 used;
 };
 
+typedef u64 Memory_Arena_Marker;
+
+internal Memory_Arena_Marker memory_arena_get_marker(Memory_Arena* arena)
+{
+    return arena->used;
+}
+
+internal void memory_arena_free_to_marker(Memory_Arena* arena, Memory_Arena_Marker marker)
+{
+    assert(marker <= arena->size);
+    arena->used = marker;
+}
+
 internal u8* memory_arena_reserve(Memory_Arena* arena, u64 size)
 {
     assert(arena->used + size <= arena->size);

@@ -88,7 +88,8 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
         return false;
     }
 
-    // TODO: Memory arena temporary memory
+    Memory_Arena_Marker memory_arena_marker = memory_arena_get_marker(vulkan_context.memory_arena);
+
     VkPhysicalDevice* physical_devices = memory_arena_reserve_array(vulkan_context.memory_arena, VkPhysicalDevice, device_count);
     if (vkEnumeratePhysicalDevices(vulkan_context.instance, &device_count, physical_devices) != VK_SUCCESS)
     {
@@ -103,7 +104,6 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
     u32 queue_family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(vulkan_context.physical_device, &queue_family_count, NULL);
 
-    // TODO: Memory arena temporary memory
     VkQueueFamilyProperties* queue_properties = memory_arena_reserve_array(vulkan_context.memory_arena, VkQueueFamilyProperties, queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(vulkan_context.physical_device, &queue_family_count, queue_properties);
 
@@ -138,6 +138,8 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
             break;
         }
     }
+
+    memory_arena_free_to_marker(vulkan_context.memory_arena, memory_arena_marker);
 
     if (vulkan_context.transfer_queue_index == U32_MAX)
     {
@@ -232,7 +234,8 @@ bool recreate_swapchain(u32 width, u32 height)
         return false;
     }
 
-    // TODO: Memory arena temporary memory
+    Memory_Arena_Marker memory_arena_marker = memory_arena_get_marker(vulkan_context.memory_arena);
+
     VkSurfaceFormatKHR* surface_formats = memory_arena_reserve_array(vulkan_context.memory_arena, VkSurfaceFormatKHR, format_count);
     if (vkGetPhysicalDeviceSurfaceFormatsKHR(vulkan_context.physical_device, vulkan_context.surface, &format_count, surface_formats) != VK_SUCCESS || format_count == 0)
     {
@@ -249,7 +252,6 @@ bool recreate_swapchain(u32 width, u32 height)
         return false;
     }
 
-    // TODO: Memory arena temporary memory
     VkPresentModeKHR* present_modes = memory_arena_reserve_array(vulkan_context.memory_arena, VkPresentModeKHR, present_mode_count);
     if (vkGetPhysicalDeviceSurfacePresentModesKHR(vulkan_context.physical_device, vulkan_context.surface, &present_mode_count, present_modes) != VK_SUCCESS || present_mode_count == 0)
     {
@@ -297,6 +299,8 @@ bool recreate_swapchain(u32 width, u32 height)
             break;
         }
     }
+
+    memory_arena_free_to_marker(vulkan_context.memory_arena, memory_arena_marker);
 
     VkSwapchainKHR old_swapchain = vulkan_context.swapchain;
 
