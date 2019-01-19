@@ -11,6 +11,8 @@
 #include "../vulkan/win32/ツ.vulkan.win32.cpp"
 #include "../vulkan/ツ.vulkan.cpp"
 
+#define MAX_FRAMES 16
+
 global u32 window_width = 800;
 global u32 window_height = 600;
 global bool running = false;
@@ -57,17 +59,6 @@ HWND create_window()
 
     return CreateWindowEx(0, window_class.lpszClassName, "Engine", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, window_width, window_height, 0, 0, window_class.hInstance, NULL);
 }
-
-struct Frame_Parameters
-{
-    Frame_Parameters* next;
-    Frame_Parameters* previous;
-
-    u64         frame_number;
-    Job_Counter game_counter;
-    Job_Counter render_counter;
-    Job_Counter gpu_counter;
-};
 
 JOB_ENTRY_POINT(game_entry_point)
 {
@@ -147,21 +138,20 @@ int main()
     // TODO: Pass window_width/window_height to init_renderer_vulkan and resize there?
     renderer_resize(window_width, window_height);
 
-    Frame_Parameters frames[16];
-    for (u64 i = 0; i < 16; ++i)
+    Frame_Parameters frames[MAX_FRAMES];
+    for (u64 i = 0; i < MAX_FRAMES; ++i)
     {
-        frames[i].next = &frames[(i + 1) % 16];
-        frames[i].previous = &frames[(i - 1 + 16) % 16];
+        frames[i].next = &frames[(i + 1) % MAX_FRAMES];
+        frames[i].previous = &frames[(i - 1 + MAX_FRAMES) % MAX_FRAMES];
     }
     
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
 
     running = true;
-    MSG message;
-
     while (running)
     {
+        MSG message;
         while (PeekMessage(&message, window_handle, 0, 0, PM_REMOVE))
         {
             TranslateMessage(&message);

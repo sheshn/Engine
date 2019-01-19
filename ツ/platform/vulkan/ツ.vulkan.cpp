@@ -17,14 +17,18 @@ internal VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsE
 }
 
 #define MAX_SWAPCHAIN_IMAGES 3
+#define MAX_FRAME_RESOURCES  3
+#define STAGING_BUFFER_SIZE (64 * 1024 * 1024)
+#define MESH_BUFFER_SIZE    (256 * 1024 * 1024)
 
 struct Vulkan_Context
 {
-    VkInstance                 instance;
-    VkDevice                   device;
-    VkPhysicalDevice           physical_device;
-    VkPhysicalDeviceProperties physical_device_properties;
-    VkPhysicalDeviceFeatures   physical_device_features;
+    VkInstance                       instance;
+    VkDevice                         device;
+    VkPhysicalDevice                 physical_device;
+    VkPhysicalDeviceProperties       physical_device_properties;
+    VkPhysicalDeviceFeatures         physical_device_features;
+    VkPhysicalDeviceMemoryProperties physical_device_memory_properties;
 
     VkQueue graphics_queue;
     u32     graphics_queue_index;
@@ -48,6 +52,132 @@ struct Vulkan_Context
 };
 
 internal Vulkan_Context vulkan_context;
+
+struct Vulkan_Memory_Block
+{
+    VkDeviceMemory device_memory;
+    VkMemoryType   memory_type;
+    u32            memory_type_index;
+
+    u8* base;
+    u64 size;
+    u64 used;
+};
+
+internal u32 get_memory_type_index(u32 memory_type_bits, VkMemoryPropertyFlags memory_properties)
+{
+    u32 memory_type_index = 0;
+    for (u32 i = 0; i < vulkan_context.physical_device_memory_properties.memoryTypeCount; ++i)
+    {
+        if ((memory_type_bits & (1 << i)) && (vulkan_context.physical_device_memory_properties.memoryTypes[i].propertyFlags & memory_properties) == memory_properties)
+        {
+            memory_type_index = i;
+            break;
+        }
+    }
+    return memory_type_index;
+}
+
+internal bool allocate_vulkan_memory_block(u64 size, u32 memory_type_index, Vulkan_Memory_Block* memory_block)
+{
+    VkMemoryAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize = size;
+    allocate_info.memoryTypeIndex = memory_type_index;
+    if (vkAllocateMemory(vulkan_context.device, &allocate_info, NULL, &memory_block->device_memory) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to allocate Vulkan memory block!\n");
+        return false;
+    }
+
+    memory_block->memory_type = vulkan_context.physical_device_memory_properties.memoryTypes[memory_type_index];
+    memory_block->memory_type_index = memory_type_index;
+    memory_block->size = size;
+    memory_block->used = 0;
+
+    if (memory_block->memory_type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    {
+        vkMapMemory(vulkan_context.device, memory_block->device_memory, 0, VK_WHOLE_SIZE, 0, (void**)&memory_block->base);
+    }
+    return true;
+}
+
+internal bool vulkan_memory_block_reserve_buffer(Vulkan_Memory_Block* memory_block, VkBufferCreateInfo* buffer_create_info, VkMemoryPropertyFlags memory_properties, VkBuffer* buffer)
+{
+    if (vkCreateBuffer(vulkan_context.device, buffer_create_info, NULL, buffer) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan buffer!\n");
+        return false;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(vulkan_context.device, *buffer, &memory_requirements);
+
+    // TODO: Take memory_requirements alignment into account
+    assert((memory_block->used + memory_requirements.size <= memory_block->size) && (memory_properties & memory_block->memory_type.propertyFlags) == memory_properties && (memory_requirements.memoryTypeBits & (1 << memory_block->memory_type_index)));
+
+    if (vkBindBufferMemory(vulkan_context.device, *buffer, memory_block->device_memory, memory_block->used) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to bind Vulkan buffer to device memory!\n");
+        return false;
+    }
+
+    memory_block->used += memory_requirements.size;
+    return true;
+}
+
+internal bool allocate_vulkan_buffer(VkBufferCreateInfo* buffer_create_info, VkMemoryPropertyFlags memory_properties, VkBuffer* buffer, Vulkan_Memory_Block* memory_block)
+{
+    if (vkCreateBuffer(vulkan_context.device, buffer_create_info, NULL, buffer) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan buffer!\n");
+        return false;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(vulkan_context.device, *buffer, &memory_requirements);
+
+    if (!allocate_vulkan_memory_block(memory_requirements.size, get_memory_type_index(memory_requirements.memoryTypeBits, memory_properties), memory_block))
+    {
+        return false;
+    }
+
+    if (vkBindBufferMemory(vulkan_context.device, *buffer, memory_block->device_memory, 0) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to bind Vulkan buffer to device memory!\n");
+        return false;
+    }
+
+    memory_block->used += memory_requirements.size;
+    return true;
+}
+
+struct Frame_Resources
+{
+    VkCommandBuffer command_buffer;
+    VkSemaphore     image_available_semaphore;
+    VkSemaphore     render_finished_semaphore;
+    u32             swapchain_image_index;
+};
+
+struct Renderer
+{
+    Frame_Resources frame_resources[MAX_FRAME_RESOURCES];
+
+    Vulkan_Memory_Block staging_memory_block;
+    Memory_Arena        staging_arena;
+    VkBuffer            staging_buffer;
+
+    Vulkan_Memory_Block mesh_memory_block;
+    VkBuffer            mesh_buffer;
+};
+
+internal Renderer renderer;
 
 bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Arena* memory_arena)
 {
@@ -126,8 +256,8 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
             vulkan_context.present_queue_index = i;
         }
 
-        if (vulkan_context.transfer_queue_index == U32_MAX && 
-            queue_properties[i].queueFlags & VK_QUEUE_TRANSFER_BIT && 
+        if (vulkan_context.transfer_queue_index == U32_MAX &&
+            queue_properties[i].queueFlags & VK_QUEUE_TRANSFER_BIT &&
             (((vulkan_context.graphics_queue_index == i || vulkan_context.present_queue_index == i) && queue_properties[i].queueCount > 1) || queue_properties[i].queueCount > 0))
         {
             vulkan_context.transfer_queue_index = i;
@@ -181,6 +311,7 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
 
     vkGetPhysicalDeviceProperties(vulkan_context.physical_device, &vulkan_context.physical_device_properties);
     vkGetPhysicalDeviceFeatures(vulkan_context.physical_device, &vulkan_context.physical_device_features);
+    vkGetPhysicalDeviceMemoryProperties(vulkan_context.physical_device, &vulkan_context.physical_device_memory_properties);
 
     VkDeviceCreateInfo device_create_info = {};
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -188,7 +319,7 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
     device_create_info.pQueueCreateInfos = &queue_create_infos[0];
     device_create_info.pEnabledFeatures = &vulkan_context.physical_device_features;
 
-    char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME};
     device_create_info.enabledExtensionCount = sizeof(device_extensions) / sizeof(device_extensions[0]);
     device_create_info.ppEnabledExtensionNames = &device_extensions[0];
 
@@ -207,15 +338,34 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.present_queue_index, 0, &vulkan_context.present_queue);
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.transfer_queue_index, (vulkan_context.transfer_queue_index == vulkan_context.graphics_queue_index || vulkan_context.transfer_queue_index == vulkan_context.present_queue_index) && separate_transfer_queue ? 1 : 0, &vulkan_context.transfer_queue);
 
+    VkBufferCreateInfo buffer_create_info = {};
+    buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_create_info.size = STAGING_BUFFER_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.staging_buffer, &renderer.staging_memory_block))
+    {
+        // TODO: Logging
+        printf("Failed to create Vulkan renderer staging buffer!\n");
+        return false;
+    }
+
+    renderer.staging_arena = {renderer.staging_memory_block.base, 0, 0};
+
+    buffer_create_info.size = MESH_BUFFER_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block))
+    {
+        // TODO: Logging
+        printf("Failed to create Vulkan renderer mesh buffer!\n");
+        return false;
+    }
     return true;
 }
 
 bool recreate_swapchain(u32 width, u32 height)
 {
-    if (vulkan_context.device == NULL || vulkan_context.surface == NULL)
-    {
-        return false;
-    }
+    assert(vulkan_context.device != NULL && vulkan_context.surface != NULL);
     vkDeviceWaitIdle(vulkan_context.device);
 
     VkSurfaceCapabilitiesKHR surface_capabilities;
@@ -364,9 +514,54 @@ bool recreate_swapchain(u32 width, u32 height)
     return true;
 }
 
+void renderer_submit_frame(Frame_Parameters* frame_params)
+{
+    Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit_info = {};
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = &frame_resources->image_available_semaphore;
+    submit_info.pWaitDstStageMask = &wait_stage;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &frame_resources->command_buffer;
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &frame_resources->render_finished_semaphore;
+
+    if (vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, NULL) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Failed to submit Vulkan command buffer!\n");
+        return;
+    }
+
+    VkPresentInfoKHR present_info = {};
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &frame_resources->render_finished_semaphore;
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &vulkan_context.swapchain;
+    present_info.pImageIndices = &frame_resources->swapchain_image_index;
+
+    VkResult result = vkQueuePresentKHR(vulkan_context.present_queue, &present_info);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+    {
+        // TODO: Recreate swapchain/resources
+    }
+    else if (result != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to present Vulkan swapchain image!\n");
+    }
+}
 
 void renderer_resize(u32 window_width, u32 window_height)
 {
+    // Note: Vulkan needs to be initialized
+    if (vulkan_context.device == NULL || vulkan_context.surface == NULL)
+    {
+        return;
+    }
+
     if (!recreate_swapchain(window_width, window_height))
     {
         // TODO: Logging

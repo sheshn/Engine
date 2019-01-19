@@ -1,12 +1,23 @@
 #pragma once
 
-#include "ツ.types.h"
+#include "ツ.job.h"
 
 #if defined(DEBUG)
     #define assert(condition) do { if (!(condition)) { *(volatile int*)0 = 0; } } while (0)
 #else
     #define assert(condition)
 #endif
+
+struct Frame_Parameters
+{
+    Frame_Parameters* next;
+    Frame_Parameters* previous;
+
+    u64         frame_number;
+    Job_Counter game_counter;
+    Job_Counter render_counter;
+    Job_Counter gpu_counter;
+};
 
 struct Memory_Arena
 {
