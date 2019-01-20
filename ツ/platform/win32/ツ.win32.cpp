@@ -132,6 +132,7 @@ JOB_ENTRY_POINT(gpu_entry_point)
     }
 
     printf("GPU %lld\n", frame_params->frame_number);
+    renderer_submit_frame(frame_params);
 }
 
 int main()

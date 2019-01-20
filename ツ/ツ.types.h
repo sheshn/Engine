@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
- 
+
 typedef int8_t   s8;
 typedef int16_t  s16;
 typedef int32_t  s32;
@@ -18,6 +18,7 @@ typedef double   f64;
 #define global   static
 
 #define U32_MAX 0xFFFFFFFF
+#define U64_MAX 0xFFFFFFFFFFFFFFFFUL
 
 struct v2
 {

@@ -6,15 +6,17 @@
     VK_FUNCTIONS_DEVICE
 #undef VK_FUNCTION
 
-internal VkDebugUtilsMessengerEXT debug_messenger;
+#if defined(DEBUG)
+    internal VkDebugUtilsMessengerEXT debug_messenger;
 
-internal VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type, VkDebugUtilsMessengerCallbackDataEXT* callback_data, void* user_data)
-{
-    // TODO: Logging
-    // TODO: Better log message
-    printf("Vulkan: %s\n", callback_data->pMessage);
-    return false;
-}
+    internal VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type, VkDebugUtilsMessengerCallbackDataEXT* callback_data, void* user_data)
+    {
+        // TODO: Logging
+        // TODO: Better log message
+        printf("Vulkan: %s\n", callback_data->pMessage);
+        return false;
+    }
+#endif
 
 #define MAX_SWAPCHAIN_IMAGES 3
 #define MAX_FRAME_RESOURCES  3
@@ -174,6 +176,7 @@ struct Renderer
 
     VkPipelineLayout pipeline_layout;
     VkPipeline       pipeline;
+    VkCommandPool    command_pool;
 
     Vulkan_Memory_Block staging_memory_block;
     Memory_Arena        staging_arena;
@@ -386,6 +389,8 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
     multisample_state_create_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
+    color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
     VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
     color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     color_blend_state_create_info.attachmentCount = 1;
@@ -463,7 +468,7 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
     pipeline_create_info.renderPass = vulkan_context.swapchain_render_pass;
 
     // NOTE: Ignoring pipeline cache for now
-    if (vkCreateGraphicsPipelines(vulkan_context.device, VK_NULL_HANDLE, 1, &pipeline_create_info, NULL, &renderer.pipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(vulkan_context.device, NULL, 1, &pipeline_create_info, NULL, &renderer.pipeline) != VK_SUCCESS)
     {
         // TODO: Logging
         printf("Unable to create Vulkan renderer pipeline!\n");
@@ -472,6 +477,84 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     vkDestroyShaderModule(vulkan_context.device, vertex_shader_module, NULL);
     vkDestroyShaderModule(vulkan_context.device, fragment_shader_module, NULL);
+
+    // TODO: Record command buffers using the job system
+    VkCommandPoolCreateInfo command_pool_create_info = {};
+    command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
+    command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if (vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.command_pool) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer command pool!\n");
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo command_buffer_allocate_info = {};
+    command_buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    command_buffer_allocate_info.commandPool = renderer.command_pool;
+    command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    command_buffer_allocate_info.commandBufferCount = 1;
+
+    VkSemaphoreCreateInfo semaphore_create_info = {};
+    semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
+    {
+        if (vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].image_available_semaphore) != VK_SUCCESS ||
+            vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].render_finished_semaphore) != VK_SUCCESS)
+        {
+            // TODO: Logging
+            printf("Unable to create Vulkan renderer semaphores!\n");
+            return false;
+        }
+
+        if (vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].command_buffer) != VK_SUCCESS)
+        {
+            // TODO: Logging
+            printf("Unable to create Vulkan renderer command buffers!\n");
+            return false;
+        }
+
+        VkCommandBufferBeginInfo command_buffer_begin_info = {};
+        command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        if (vkBeginCommandBuffer(renderer.frame_resources[i].command_buffer, &command_buffer_begin_info) != VK_SUCCESS)
+        {
+            // TODO: Logging
+            printf("Vulkan renderer failed to begin recording command buffer!\n");
+            return false;
+        }
+
+        VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+        VkRenderPassBeginInfo render_pass_begin_info = {};
+        render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
+        render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[i];
+        render_pass_begin_info.renderArea.offset = {0, 0};
+        render_pass_begin_info.renderArea.extent = vulkan_context.swapchain_extent;
+        render_pass_begin_info.clearValueCount = 1;
+        render_pass_begin_info.pClearValues = &clear_color;
+
+        vkCmdBeginRenderPass(renderer.frame_resources[i].command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(renderer.frame_resources[i].command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
+
+        VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
+        vkCmdSetViewport(renderer.frame_resources[i].command_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
+        vkCmdSetScissor(renderer.frame_resources[i].command_buffer, 0, 1, &scissor);
+
+        vkCmdDraw(renderer.frame_resources[i].command_buffer, 3, 1, 0, 0);
+        vkCmdEndRenderPass(renderer.frame_resources[i].command_buffer);
+
+        if (vkEndCommandBuffer(renderer.frame_resources[i].command_buffer) != VK_SUCCESS)
+        {
+            // TODO: Logging
+            printf("Vulkan renderer failed to end recording command buffer!\n");
+            return false;
+        }
+    }
 
     VkBufferCreateInfo buffer_create_info = {};
     buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -648,12 +731,22 @@ bool recreate_swapchain(u32 width, u32 height)
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color_attachment_reference;
 
+    VkSubpassDependency dependency = {};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
     VkRenderPassCreateInfo render_pass_create_info = {};
     render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_create_info.attachmentCount = 1;
     render_pass_create_info.pAttachments = &color_attachment;
     render_pass_create_info.subpassCount = 1;
     render_pass_create_info.pSubpasses = &subpass;
+    render_pass_create_info.dependencyCount = 1;
+    render_pass_create_info.pDependencies = &dependency;
     if (vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &vulkan_context.swapchain_render_pass) != VK_SUCCESS)
     {
         // TODO: Logging
@@ -704,6 +797,7 @@ bool recreate_swapchain(u32 width, u32 height)
 void renderer_submit_frame(Frame_Parameters* frame_params)
 {
     Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
+    vkAcquireNextImageKHR(vulkan_context.device, vulkan_context.swapchain, U64_MAX, frame_resources->image_available_semaphore, NULL, &frame_resources->swapchain_image_index);
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {};
@@ -755,5 +849,6 @@ void renderer_resize(u32 window_width, u32 window_height)
         printf("Error recreating Vulkan swapchain!\n");
         return;
     }
-}
 
+    // TODO: Need to make sure command buffers are rerecorded!
+}
