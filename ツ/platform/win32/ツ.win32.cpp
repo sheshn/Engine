@@ -22,6 +22,36 @@ u8* allocate_memory(u64 size)
     return (u8*)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
+bool DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8** data)
+{
+    bool result = false;
+
+    HANDLE file_handle = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+    LARGE_INTEGER file_size;
+    if (file_handle != INVALID_HANDLE_VALUE && GetFileSizeEx(file_handle, &file_size))
+    {
+        u32 s = (u32)file_size.QuadPart;
+        u8* file_data = memory_arena_reserve(memory_arena, (u64)s);
+
+        DWORD bytes_read;
+        if (ReadFile(file_handle, file_data, s, &bytes_read, 0) && bytes_read == s)
+        {
+            *data = file_data;
+            *size = (u64)s;
+            result = true;
+        }
+    }
+
+    if (!result)
+    {
+        // TODO: Logging
+        printf("Unable to read file: %s\n", filename);
+    }
+
+    CloseHandle(file_handle);
+    return true;
+}
+
 LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
     switch (message)
@@ -128,15 +158,12 @@ int main()
 
     VkInstance vulkan_instance;
     VkSurfaceKHR vulkan_surface;
-    if (!win32_init_vulkan(window_handle, &vulkan_instance, &vulkan_surface) || !init_renderer_vulkan(vulkan_instance, vulkan_surface, &platform_arena))
+    if (!win32_init_vulkan(window_handle, &vulkan_instance, &vulkan_surface) || !init_renderer_vulkan(vulkan_instance, vulkan_surface, window_width, window_height, &platform_arena))
     {
         // TODO: Logging
         printf("Failed to initialize Vulkan!\n");
         return 1;
     }
-
-    // TODO: Pass window_width/window_height to init_renderer_vulkan and resize there?
-    renderer_resize(window_width, window_height);
 
     Frame_Parameters frames[MAX_FRAMES];
     for (u64 i = 0; i < MAX_FRAMES; ++i)
@@ -144,7 +171,7 @@ int main()
         frames[i].next = &frames[(i + 1) % MAX_FRAMES];
         frames[i].previous = &frames[(i - 1 + MAX_FRAMES) % MAX_FRAMES];
     }
-    
+
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
 

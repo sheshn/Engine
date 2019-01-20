@@ -176,9 +176,10 @@ struct Job_Scheduler_Thread
     volatile u32*         previous_fiber_list_lock;
 };
 
-#define MAX_THREAD_COUNT 16
-#define MAX_QUEUE_COUNT  JOB_PRIORITY_HIGH + 1
-#define MAX_FIBER_COUNT  256
+#define MAX_THREAD_COUNT  16
+#define MAX_QUEUE_COUNT  (JOB_PRIORITY_HIGH + 1)
+#define MAX_FIBER_COUNT   256
+#define FIBER_STACK_SIZE (64 * 1024 * 1024)
 
 internal Job_Scheduler_Thread threads[MAX_THREAD_COUNT];
 internal Job_Queue            queues[MAX_QUEUE_COUNT];
@@ -351,6 +352,18 @@ THREAD_PROC(thread_proc)
     return 0;
 }
 
+u32 get_thread_id()
+{
+    assert(scheduler_thread != NULL);
+    return scheduler_thread->id;
+}
+
+u64 get_thread_count()
+{
+    assert(scheduler_thread != NULL);
+    return scheduler.thread_count;
+}
+
 bool init_job_system(u32 thread_count)
 {
     scheduler.semaphore_handle = create_semaphore(thread_count);
@@ -359,16 +372,16 @@ bool init_job_system(u32 thread_count)
     {
         init_job_queue(&queues[i]);
     }
-
-    u64 stack_size = 64 * 1024 * 1024;
     for (u64 i = 0; i < MAX_FIBER_COUNT; ++i)
     {
         fibers[i].next = NULL;
         fibers[i].previous = NULL;
-        fibers[i].fiber.stack_size = stack_size;
+        fibers[i].fiber.stack_size = FIBER_STACK_SIZE;
         fibers[i].fiber.handle = NULL;
     }
 
+    // NOTE: The main thread already counts as one thread
+    // (thread_count - 1) additional threads will be created
     scheduler.thread_count = thread_count;
     for (u32 i = 1; i < scheduler.thread_count; ++i)
     {

@@ -19,3 +19,36 @@ typedef double   f64;
 
 #define U32_MAX 0xFFFFFFFF
 
+struct v2
+{
+    union
+    {
+        float data[2];
+
+        struct { float x, y; };
+        struct { float u, v; };
+    };
+};
+
+struct v3
+{
+    union
+    {
+        float data[3];
+
+        struct { float x, y, z; };
+        struct { float r, g, b; };
+    };
+};
+
+struct v4
+{
+    union
+    {
+        float data[4];
+
+        struct { float x, y, z, w; };
+        struct { float r, g, b, a; };
+    };
+};
+

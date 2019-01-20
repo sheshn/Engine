@@ -21,6 +21,8 @@ struct Job
     Job_Counter*    counter     = nullptr;
 };
 
+u32  get_thread_id();
+u64  get_thread_count();
 bool init_job_system(u32 threads);
 void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter);
 void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter, Job_Priority priority);

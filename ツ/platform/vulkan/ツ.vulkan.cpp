@@ -47,6 +47,9 @@ struct Vulkan_Context
     VkImageView        swapchain_image_views[MAX_SWAPCHAIN_IMAGES];
     u32                swapchain_image_count;
 
+    VkRenderPass  swapchain_render_pass;
+    VkFramebuffer swapchain_framebuffers[MAX_SWAPCHAIN_IMAGES];
+
     // TODO: Improve renderer memory situation
     Memory_Arena* memory_arena;
 };
@@ -169,6 +172,9 @@ struct Renderer
 {
     Frame_Resources frame_resources[MAX_FRAME_RESOURCES];
 
+    VkPipelineLayout pipeline_layout;
+    VkPipeline       pipeline;
+
     Vulkan_Memory_Block staging_memory_block;
     Memory_Arena        staging_arena;
     VkBuffer            staging_buffer;
@@ -179,12 +185,11 @@ struct Renderer
 
 internal Renderer renderer;
 
-bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Arena* memory_arena)
-{
-    vulkan_context.device = NULL;
-    vulkan_context.swapchain = NULL;
-    vulkan_context.swapchain_image_count = 0;
+bool recreate_swapchain(u32 width, u32 height);
 
+bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_width, u32 window_height, Memory_Arena* memory_arena)
+{
+    vulkan_context = {};
     vulkan_context.memory_arena = memory_arena;
     vulkan_context.instance = instance;
     vulkan_context.surface = surface;
@@ -337,6 +342,136 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, Memory_Aren
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.graphics_queue_index, 0, &vulkan_context.graphics_queue);
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.present_queue_index, 0, &vulkan_context.present_queue);
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.transfer_queue_index, (vulkan_context.transfer_queue_index == vulkan_context.graphics_queue_index || vulkan_context.transfer_queue_index == vulkan_context.present_queue_index) && separate_transfer_queue ? 1 : 0, &vulkan_context.transfer_queue);
+
+    if (!recreate_swapchain(window_width, window_height))
+    {
+        // TODO: Logging
+        printf("Error initializing Vulkan swapchain!\n");
+        return false;
+    }
+
+    // TODO: Make it easier to create piplines!
+    VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
+    pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    if (vkCreatePipelineLayout(vulkan_context.device, &pipeline_layout_create_info, NULL, &renderer.pipeline_layout) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer pipeline layout!\n");
+        return false;
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {};
+    vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {};
+    input_assembly_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly_state_create_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {};
+    dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_create_info.dynamicStateCount = 2;
+    dynamic_state_create_info.pDynamicStates = dynamic_states;
+
+    VkPipelineViewportStateCreateInfo viewport_state_create_info = {};
+    viewport_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state_create_info.viewportCount = 1;
+    viewport_state_create_info.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {};
+    rasterization_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+
+    VkPipelineMultisampleStateCreateInfo multisample_state_create_info = {};
+    multisample_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample_state_create_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {};
+    VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
+    color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend_state_create_info.attachmentCount = 1;
+    color_blend_state_create_info.pAttachments = &color_blend_attachment;
+
+    memory_arena_marker = memory_arena_get_marker(vulkan_context.memory_arena);
+
+    // TODO: Use final read file implementation
+    u8* vertex_shader_code;
+    u64 vertex_shader_code_size;
+    if (!DEBUG_read_file("shaders/vertex.spv", vulkan_context.memory_arena, &vertex_shader_code_size, &vertex_shader_code))
+    {
+        return false;
+    }
+
+    VkShaderModule vertex_shader_module, fragment_shader_module;
+    VkShaderModuleCreateInfo shader_module_create_info = {};
+    shader_module_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_module_create_info.codeSize = vertex_shader_code_size;
+    shader_module_create_info.pCode = (u32*)vertex_shader_code;
+    if (vkCreateShaderModule(vulkan_context.device, &shader_module_create_info, NULL, &vertex_shader_module) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer vertex shader module\n");
+        return false;
+    }
+
+    u8* fragment_shader_code;
+    u64 fragment_shader_code_size;
+    if (!DEBUG_read_file("shaders/fragment.spv", vulkan_context.memory_arena, &fragment_shader_code_size, &fragment_shader_code))
+    {
+        return false;
+    }
+
+    shader_module_create_info.codeSize = fragment_shader_code_size;
+    shader_module_create_info.pCode = (u32*)fragment_shader_code;
+    if (vkCreateShaderModule(vulkan_context.device, &shader_module_create_info, NULL, &fragment_shader_module) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer fragment shader module\n");
+        return false;
+    }
+
+    memory_arena_free_to_marker(vulkan_context.memory_arena, memory_arena_marker);
+
+    VkPipelineShaderStageCreateInfo vertex_stage_create_info = {};
+    vertex_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertex_stage_create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertex_stage_create_info.module = vertex_shader_module;
+    vertex_stage_create_info.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragment_stage_create_info = vertex_stage_create_info;
+    fragment_stage_create_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragment_stage_create_info.module = fragment_shader_module;
+
+    VkPipelineShaderStageCreateInfo shader_stages[] = {vertex_stage_create_info, fragment_stage_create_info};
+
+    // NOTE: We are using the swapchain render pass created earlier.
+    // There is a chance the render pass needs to be recreated (which we aren't doing).
+    // In that case, the pipeline would probably need to be recreated as well.
+    // However, the pipeline just needs to be compatible with other render passes,
+    // so we are probably fine (the render pass won't change anyways).
+    VkGraphicsPipelineCreateInfo pipeline_create_info = {};
+    pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_create_info.stageCount = 2;
+    pipeline_create_info.pStages = shader_stages;
+    pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
+    pipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;
+    pipeline_create_info.pDynamicState = &dynamic_state_create_info;
+    pipeline_create_info.pViewportState = &viewport_state_create_info;
+    pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
+    pipeline_create_info.pMultisampleState = &multisample_state_create_info;
+    pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
+    pipeline_create_info.layout = renderer.pipeline_layout;
+    pipeline_create_info.renderPass = vulkan_context.swapchain_render_pass;
+
+    // NOTE: Ignoring pipeline cache for now
+    if (vkCreateGraphicsPipelines(vulkan_context.device, VK_NULL_HANDLE, 1, &pipeline_create_info, NULL, &renderer.pipeline) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer pipeline!\n");
+        return false;
+    }
+
+    vkDestroyShaderModule(vulkan_context.device, vertex_shader_module, NULL);
+    vkDestroyShaderModule(vulkan_context.device, fragment_shader_module, NULL);
 
     VkBufferCreateInfo buffer_create_info = {};
     buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -494,11 +629,49 @@ bool recreate_swapchain(u32 width, u32 height)
     vulkan_context.swapchain_image_count = min(image_count, MAX_SWAPCHAIN_IMAGES);
     vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, &vulkan_context.swapchain_images[0]);
 
+    // NOTE: We are currently recreating the render pass when the swapchain is recreated.
+    // This may not be necessary since the only parameter the render pass needs is the
+    // swapchain's surface format (which will likely always be the same).
+    VkAttachmentDescription color_attachment = {};
+    color_attachment.format = vulkan_context.surface_format.format;
+    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference color_attachment_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_attachment_reference;
+
+    VkRenderPassCreateInfo render_pass_create_info = {};
+    render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_create_info.attachmentCount = 1;
+    render_pass_create_info.pAttachments = &color_attachment;
+    render_pass_create_info.subpassCount = 1;
+    render_pass_create_info.pSubpasses = &subpass;
+    if (vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &vulkan_context.swapchain_render_pass) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan swapchain render pass!\n");
+        return false;
+    }
+
     VkImageViewCreateInfo image_view_create_info = {};
     image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     image_view_create_info.format = vulkan_context.surface_format.format;
     image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkFramebufferCreateInfo framebuffer_create_info = {};
+    framebuffer_create_info.renderPass = vulkan_context.swapchain_render_pass;
+    framebuffer_create_info.width = vulkan_context.swapchain_extent.width;
+    framebuffer_create_info.height = vulkan_context.swapchain_extent.height;
+    framebuffer_create_info.layers = 1;
 
     for (u32 i = 0; i < vulkan_context.swapchain_image_count; ++i)
     {
@@ -507,6 +680,20 @@ bool recreate_swapchain(u32 width, u32 height)
         {
             // TODO: Logging
             printf("Unable to create Vulkan swapchain image view!\n");
+            return false;
+        }
+
+        if (vulkan_context.swapchain_framebuffers[i] != NULL)
+        {
+            vkDestroyFramebuffer(vulkan_context.device, vulkan_context.swapchain_framebuffers[i], NULL);
+        }
+
+        framebuffer_create_info.attachmentCount = 1;
+        framebuffer_create_info.pAttachments = &vulkan_context.swapchain_image_views[i];
+        if (vkCreateFramebuffer(vulkan_context.device, &framebuffer_create_info, NULL, &vulkan_context.swapchain_framebuffers[i]) != VK_SUCCESS)
+        {
+            // TODO: Logging
+            printf("Unable to create Vulkan swapchain framebuffer!\n");
             return false;
         }
     }
@@ -565,7 +752,7 @@ void renderer_resize(u32 window_width, u32 window_height)
     if (!recreate_swapchain(window_width, window_height))
     {
         // TODO: Logging
-        printf("Error creating Vulkan swapchain!\n");
+        printf("Error recreating Vulkan swapchain!\n");
         return;
     }
 }
