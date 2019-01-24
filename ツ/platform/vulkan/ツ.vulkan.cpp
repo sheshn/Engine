@@ -164,6 +164,7 @@ internal bool allocate_vulkan_buffer(VkBufferCreateInfo* buffer_create_info, VkM
 
 struct Frame_Resources
 {
+    VkFence         fence;
     VkCommandBuffer command_buffer;
     VkSemaphore     image_available_semaphore;
     VkSemaphore     render_finished_semaphore;
@@ -499,6 +500,10 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkSemaphoreCreateInfo semaphore_create_info = {};
     semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
+    VkFenceCreateInfo fence_create_info = {};
+    fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
         if (vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].image_available_semaphore) != VK_SUCCESS ||
@@ -506,6 +511,13 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
         {
             // TODO: Logging
             printf("Unable to create Vulkan renderer semaphores!\n");
+            return false;
+        }
+
+        if (vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].fence) != VK_SUCCESS)
+        {
+            // TODO: Logging
+            printf("Unable to create Vulkan renderer fence!\n");
             return false;
         }
 
@@ -801,10 +813,23 @@ struct Acquire_Next_Image_Job_Data
     VkResult*   result;
 };
 
+struct Wait_For_Fences_Job_Data
+{
+    VkFence*  fences;
+    u32       fence_count;
+    VkResult* result;
+};
+
 JOB_ENTRY_POINT(acquire_next_image_entry_point)
 {
     Acquire_Next_Image_Job_Data* job_data = (Acquire_Next_Image_Job_Data*)data;
     *job_data->result = vkAcquireNextImageKHR(vulkan_context.device, vulkan_context.swapchain, U64_MAX, job_data->image_available_semaphore, NULL, job_data->swapchain_image_index);
+}
+
+JOB_ENTRY_POINT(wait_for_fences_entry_point)
+{
+    Wait_For_Fences_Job_Data* job_data = (Wait_For_Fences_Job_Data*)data;
+    *job_data->result = vkWaitForFences(vulkan_context.device, job_data->fence_count, job_data->fences, true, U64_MAX);
 }
 
 internal VkResult acquire_next_image(VkSemaphore image_available_semaphore, u32* swapchain_image_index)
@@ -820,9 +845,25 @@ internal VkResult acquire_next_image(VkSemaphore image_available_semaphore, u32*
     return result;
 }
 
+internal VkResult wait_for_fences(VkFence* fences, u32 fence_count)
+{
+    VkResult result;
+    Job_Counter counter;
+
+    Wait_For_Fences_Job_Data job_data = {fences, fence_count, &result};
+    Job job = {wait_for_fences_entry_point, &job_data, NULL};
+
+    run_jobs_on_dedicated_thread(&job, 1, &counter);
+    wait_for_counter(&counter, 0);
+    return result;
+}
+
 void renderer_submit_frame(Frame_Parameters* frame_params)
 {
     Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
+
+    wait_for_fences(&frame_resources->fence, 1);
+    vkResetFences(vulkan_context.device, 1, &frame_resources->fence);
 
     // TODO: Check result and recreate swapchain/resources as necessary
     acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
@@ -837,7 +878,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &frame_resources->render_finished_semaphore;
 
-    if (vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, NULL) != VK_SUCCESS)
+    if (vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, frame_resources->fence) != VK_SUCCESS)
     {
         // TODO: Logging
         printf("Failed to submit Vulkan command buffer!\n");

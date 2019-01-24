@@ -2315,6 +2315,18 @@ typedef struct VkRenderPassBeginInfo {
     const VkClearValue*    pClearValues;
 } VkRenderPassBeginInfo;
 
+typedef enum VkFenceCreateFlagBits {
+    VK_FENCE_CREATE_SIGNALED_BIT = 0x00000001,
+    VK_FENCE_CREATE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+} VkFenceCreateFlagBits;
+typedef VkFlags VkFenceCreateFlags;
+
+typedef struct VkFenceCreateInfo {
+    VkStructureType       sType;
+    const void*           pNext;
+    VkFenceCreateFlags    flags;
+} VkFenceCreateInfo;
+
 typedef void (VKAPI_PTR *PFN_vkDestroySurfaceKHR)(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks* pAllocator);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32* pSupported);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR* pSurfaceCapabilities);
@@ -2373,6 +2385,9 @@ typedef void (VKAPI_PTR *PFN_vkCmdBindPipeline)(VkCommandBuffer commandBuffer, V
 typedef void (VKAPI_PTR *PFN_vkCmdSetViewport)(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport* pViewports);
 typedef void (VKAPI_PTR *PFN_vkCmdSetScissor)(VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D* pScissors);
 typedef void (VKAPI_PTR *PFN_vkCmdDraw)(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance);
+typedef VkResult (VKAPI_PTR *PFN_vkCreateFence)(VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence);
+typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence* pFences);
+typedef VkResult (VKAPI_PTR *PFN_vkWaitForFences)(VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout);
 
 #define VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME "VK_KHR_draw_indirect_count"
 typedef void (VKAPI_PTR *PFN_vkCmdDrawIndirectCountKHR)(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride);
@@ -2435,6 +2450,9 @@ typedef void (VKAPI_PTR *PFN_vkCmdDrawIndexedIndirectCountKHR)(VkCommandBuffer c
         VK_FUNCTION(vkDestroyFramebuffer)             \
         VK_FUNCTION(vkCreateCommandPool)              \
         VK_FUNCTION(vkCreateSemaphore)                \
+        VK_FUNCTION(vkCreateFence)                    \
+        VK_FUNCTION(vkResetFences)                    \
+        VK_FUNCTION(vkWaitForFences)                  \
         VK_FUNCTION(vkResetCommandPool)               \
         VK_FUNCTION(vkAllocateCommandBuffers)         \
         VK_FUNCTION(vkFreeCommandBuffers)             \
