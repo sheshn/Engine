@@ -794,10 +794,38 @@ bool recreate_swapchain(u32 width, u32 height)
     return true;
 }
 
+struct Acquire_Next_Image_Job_Data
+{
+    VkSemaphore image_available_semaphore;
+    u32*        swapchain_image_index;
+    VkResult*   result;
+};
+
+JOB_ENTRY_POINT(acquire_next_image_entry_point)
+{
+    Acquire_Next_Image_Job_Data* job_data = (Acquire_Next_Image_Job_Data*)data;
+    *job_data->result = vkAcquireNextImageKHR(vulkan_context.device, vulkan_context.swapchain, U64_MAX, job_data->image_available_semaphore, NULL, job_data->swapchain_image_index);
+}
+
+internal VkResult acquire_next_image(VkSemaphore image_available_semaphore, u32* swapchain_image_index)
+{
+    VkResult result;
+    Job_Counter counter;
+
+    Acquire_Next_Image_Job_Data job_data = {image_available_semaphore, swapchain_image_index, &result};
+    Job job = {acquire_next_image_entry_point, &job_data, NULL};
+
+    run_jobs_on_dedicated_thread(&job, 1, &counter);
+    wait_for_counter(&counter, 0);
+    return result;
+}
+
 void renderer_submit_frame(Frame_Parameters* frame_params)
 {
     Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
-    vkAcquireNextImageKHR(vulkan_context.device, vulkan_context.swapchain, U64_MAX, frame_resources->image_available_semaphore, NULL, &frame_resources->swapchain_image_index);
+
+    // TODO: Check result and recreate swapchain/resources as necessary
+    acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {};

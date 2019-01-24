@@ -150,7 +150,7 @@ int main()
     }
 
     // TODO: Get system thread count
-    if (!init_job_system(8))
+    if (!init_job_system(8, 4))
     {
         // TODO: Logging
         printf("Failed to initialize job system!\n");
