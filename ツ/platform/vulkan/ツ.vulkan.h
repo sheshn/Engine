@@ -2327,6 +2327,15 @@ typedef struct VkFenceCreateInfo {
     VkFenceCreateFlags    flags;
 } VkFenceCreateInfo;
 
+typedef enum VkIndexType {
+    VK_INDEX_TYPE_UINT16 = 0,
+    VK_INDEX_TYPE_UINT32 = 1,
+    VK_INDEX_TYPE_BEGIN_RANGE = VK_INDEX_TYPE_UINT16,
+    VK_INDEX_TYPE_END_RANGE = VK_INDEX_TYPE_UINT32,
+    VK_INDEX_TYPE_RANGE_SIZE = (VK_INDEX_TYPE_UINT32 - VK_INDEX_TYPE_UINT16 + 1),
+    VK_INDEX_TYPE_MAX_ENUM = 0x7FFFFFFF
+} VkIndexType;
+
 typedef void (VKAPI_PTR *PFN_vkDestroySurfaceKHR)(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks* pAllocator);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32* pSupported);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR* pSurfaceCapabilities);
@@ -2388,6 +2397,8 @@ typedef void (VKAPI_PTR *PFN_vkCmdDraw)(VkCommandBuffer commandBuffer, uint32_t 
 typedef VkResult (VKAPI_PTR *PFN_vkCreateFence)(VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence);
 typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence* pFences);
 typedef VkResult (VKAPI_PTR *PFN_vkWaitForFences)(VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout);
+typedef void (VKAPI_PTR *PFN_vkCmdBindIndexBuffer)(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType);
+typedef void (VKAPI_PTR *PFN_vkCmdBindVertexBuffers)(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets);
 
 #define VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME "VK_KHR_draw_indirect_count"
 typedef void (VKAPI_PTR *PFN_vkCmdDrawIndirectCountKHR)(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride);
@@ -2466,6 +2477,8 @@ typedef void (VKAPI_PTR *PFN_vkCmdDrawIndexedIndirectCountKHR)(VkCommandBuffer c
         VK_FUNCTION(vkCmdSetViewport)                 \
         VK_FUNCTION(vkCmdSetScissor)                  \
         VK_FUNCTION(vkCmdDraw)                        \
+        VK_FUNCTION(vkCmdBindIndexBuffer)             \
+        VK_FUNCTION(vkCmdBindVertexBuffers)           \
         VK_FUNCTION(vkCmdDrawIndirectCountKHR)        \
         VK_FUNCTION(vkCmdDrawIndexedIndirectCountKHR)
     VK_FUNCTIONS_DEVICE

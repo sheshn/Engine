@@ -364,8 +364,19 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
         return false;
     }
 
+    VkVertexInputBindingDescription vertex_binding_description = {};
+    vertex_binding_description.binding = 0;
+    vertex_binding_description.stride = sizeof(Vertex);
+    vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription vertex_attribute_descriptions[] = {VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}};
+
     VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {};
     vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
+    vertex_input_state_create_info.pVertexBindingDescriptions = &vertex_binding_description;
+    vertex_input_state_create_info.vertexAttributeDescriptionCount = sizeof(vertex_attribute_descriptions) / sizeof(vertex_attribute_descriptions[0]);
+    vertex_input_state_create_info.pVertexAttributeDescriptions = vertex_attribute_descriptions;
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {};
     input_assembly_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -479,6 +490,38 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkDestroyShaderModule(vulkan_context.device, vertex_shader_module, NULL);
     vkDestroyShaderModule(vulkan_context.device, fragment_shader_module, NULL);
 
+    VkBufferCreateInfo buffer_create_info = {};
+    buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_create_info.size = STAGING_BUFFER_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.staging_buffer, &renderer.staging_memory_block))
+    {
+        // TODO: Logging
+        printf("Failed to create Vulkan renderer staging buffer!\n");
+        return false;
+    }
+
+    renderer.staging_arena = {renderer.staging_memory_block.base, renderer.staging_memory_block.size, 0};
+
+    u32 num_vertices = 6;
+    Vertex* vertices = (Vertex*)memory_arena_reserve(&renderer.staging_arena, sizeof(Vertex) * num_vertices);
+    vertices[0].position = {-0.5, -0.5, 0, 1};
+    vertices[1].position = {-0.5, 0.5, 0, 1};
+    vertices[2].position = {0.5, 0.5, 0, 1};
+    vertices[3].position = {0.5, 0.5, 0, 1};
+    vertices[4].position = {0.5, -0.5, 0, 1};
+    vertices[5].position = {-0.5, -0.5, 0, 1};
+
+    buffer_create_info.size = MESH_BUFFER_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block))
+    {
+        // TODO: Logging
+        printf("Failed to create Vulkan renderer mesh buffer!\n");
+        return false;
+    }
+
     // TODO: Record command buffers using the job system
     VkCommandPoolCreateInfo command_pool_create_info = {};
     command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -557,7 +600,10 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
         VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
         vkCmdSetScissor(renderer.frame_resources[i].command_buffer, 0, 1, &scissor);
 
-        vkCmdDraw(renderer.frame_resources[i].command_buffer, 3, 1, 0, 0);
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(renderer.frame_resources[i].command_buffer, 0, 1, &renderer.staging_buffer, &offset);
+
+        vkCmdDraw(renderer.frame_resources[i].command_buffer, num_vertices, 1, 0, 0);
         vkCmdEndRenderPass(renderer.frame_resources[i].command_buffer);
 
         if (vkEndCommandBuffer(renderer.frame_resources[i].command_buffer) != VK_SUCCESS)
@@ -568,28 +614,6 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
         }
     }
 
-    VkBufferCreateInfo buffer_create_info = {};
-    buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_create_info.size = STAGING_BUFFER_SIZE;
-    buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.staging_buffer, &renderer.staging_memory_block))
-    {
-        // TODO: Logging
-        printf("Failed to create Vulkan renderer staging buffer!\n");
-        return false;
-    }
-
-    renderer.staging_arena = {renderer.staging_memory_block.base, 0, 0};
-
-    buffer_create_info.size = MESH_BUFFER_SIZE;
-    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block))
-    {
-        // TODO: Logging
-        printf("Failed to create Vulkan renderer mesh buffer!\n");
-        return false;
-    }
     return true;
 }
 
@@ -670,6 +694,8 @@ bool recreate_swapchain(u32 width, u32 height)
         vulkan_context.swapchain_extent.height = max(surface_capabilities.minImageExtent.height, min(surface_capabilities.maxImageExtent.height, height));
     }
 
+    // NOTE: Right now, we are assuming that we will get mailbox present mode.
+    // If we don't, then we should not triple buffer. (ie. MAX_FRAME_RESOURCES should be 2 instead of 3)
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (u32 i = 0; i < present_mode_count; ++i)
     {
@@ -906,7 +932,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
 void renderer_resize(u32 window_width, u32 window_height)
 {
-    // Note: Vulkan needs to be initialized
+    // NOTE: Vulkan needs to be initialized
     if (vulkan_context.device == NULL || vulkan_context.surface == NULL)
     {
         return;
