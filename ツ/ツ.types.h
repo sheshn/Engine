@@ -52,4 +52,3 @@ struct v4
         struct { float r, g, b, a; };
     };
 };
-

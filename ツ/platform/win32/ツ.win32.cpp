@@ -8,6 +8,7 @@
 
 // NOTE: Unity build
 #include "../../ツ.job.cpp"
+#include "../../ツ.renderer.cpp"
 #include "../vulkan/win32/ツ.vulkan.win32.cpp"
 #include "../vulkan/ツ.vulkan.cpp"
 
@@ -99,7 +100,7 @@ JOB_ENTRY_POINT(game_entry_point)
         wait_for_counter(&frame_params->previous->game_counter, 0);
     }
 
-    printf("GAME %lld\n", frame_params->frame_number);
+    // printf("GAME %lld\n", frame_params->frame_number);
 }
 
 JOB_ENTRY_POINT(render_entry_point)
@@ -115,7 +116,7 @@ JOB_ENTRY_POINT(render_entry_point)
         wait_for_counter(&frame_params->previous->render_counter, 0);
     }
 
-    printf("RENDER %lld\n", frame_params->frame_number);
+    // printf("RENDER %lld\n", frame_params->frame_number);
 }
 
 JOB_ENTRY_POINT(gpu_entry_point)
@@ -131,8 +132,12 @@ JOB_ENTRY_POINT(gpu_entry_point)
         wait_for_counter(&frame_params->previous->gpu_counter, 0);
     }
 
-    printf("GPU %lld\n", frame_params->frame_number);
     renderer_submit_frame(frame_params);
+
+    if (frame_params->frame_number % 110 == 0)
+    {
+        printf("GPU %lld\n", frame_params->frame_number);
+    }
 }
 
 int main()
@@ -157,9 +162,7 @@ int main()
         return 1;
     }
 
-    VkInstance vulkan_instance;
-    VkSurfaceKHR vulkan_surface;
-    if (!win32_init_vulkan(window_handle, &vulkan_instance, &vulkan_surface) || !init_renderer_vulkan(vulkan_instance, vulkan_surface, window_width, window_height, &platform_arena))
+    if (!win32_init_vulkan_renderer(window_handle, window_width, window_height))
     {
         // TODO: Logging
         printf("Failed to initialize Vulkan!\n");
@@ -204,4 +207,3 @@ int main()
 
     return 0;
 }
-

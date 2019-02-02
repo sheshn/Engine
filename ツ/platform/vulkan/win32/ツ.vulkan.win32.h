@@ -24,5 +24,4 @@ typedef VkResult (VKAPI_PTR *PFN_vkCreateWin32SurfaceKHR)(VkInstance instance, c
 
 external PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
 
-bool win32_init_vulkan(HWND window, VkInstance* vulkan_instance, VkSurfaceKHR* vulkan_surface);
-
+bool win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height);

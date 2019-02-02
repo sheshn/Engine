@@ -8,6 +8,8 @@
     #define assert(condition)
 #endif
 
+#define array_count(array) (sizeof((array))/sizeof((array)[0]))
+
 struct Frame_Parameters
 {
     Frame_Parameters* next;
@@ -47,5 +49,9 @@ internal u8* memory_arena_reserve(Memory_Arena* arena, u64 size)
     return result;
 }
 
-#define memory_arena_reserve_array(arena, type, count) (type*)memory_arena_reserve((arena), sizeof(type) * (count))
+internal void memory_arena_reset(Memory_Arena* arena)
+{
+    arena->used = 0;
+}
 
+#define memory_arena_reserve_array(arena, type, count) (type*)memory_arena_reserve((arena), sizeof(type) * (count))

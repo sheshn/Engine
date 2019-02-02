@@ -20,8 +20,8 @@
 
 #define MAX_SWAPCHAIN_IMAGES 3
 #define MAX_FRAME_RESOURCES  3
-#define STAGING_BUFFER_SIZE (64 * 1024 * 1024)
-#define MESH_BUFFER_SIZE    (256 * 1024 * 1024)
+#define TRANSFER_BUFFER_SIZE (64 * 1024 * 1024)
+#define MESH_BUFFER_SIZE     (256 * 1024 * 1024)
 
 struct Vulkan_Context
 {
@@ -164,11 +164,12 @@ internal bool allocate_vulkan_buffer(VkBufferCreateInfo* buffer_create_info, VkM
 
 struct Frame_Resources
 {
-    VkFence         fence;
-    VkCommandBuffer command_buffer;
-    VkSemaphore     image_available_semaphore;
-    VkSemaphore     render_finished_semaphore;
-    u32             swapchain_image_index;
+    VkCommandBuffer graphics_command_buffer;
+    VkFence         graphics_command_buffer_fence;
+
+    VkSemaphore image_available_semaphore;
+    VkSemaphore render_finished_semaphore;
+    u32         swapchain_image_index;
 };
 
 struct Renderer
@@ -177,14 +178,19 @@ struct Renderer
 
     VkPipelineLayout pipeline_layout;
     VkPipeline       pipeline;
-    VkCommandPool    command_pool;
+    VkCommandPool    graphics_command_pool;
 
-    Vulkan_Memory_Block staging_memory_block;
-    Memory_Arena        staging_arena;
-    VkBuffer            staging_buffer;
+    Vulkan_Memory_Block transfer_memory_block;
+    VkBuffer            transfer_buffer;
+
+    Renderer_Transfer_Queue transfer_queue;
+    VkCommandPool           transfer_command_pool;
+    VkCommandBuffer         transfer_command_buffer;
+    VkFence                 transfer_command_buffer_fence;
 
     Vulkan_Memory_Block mesh_memory_block;
     VkBuffer            mesh_buffer;
+    u64                 mesh_buffer_used;
 };
 
 internal Renderer renderer;
@@ -304,6 +310,8 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
     queue_create_info.pQueuePriorities = &queue_priorities[0];
     queue_create_infos[0] = queue_create_info;
 
+    // NOTE: If the present queue is different from the graphics queue we need to handle submitting a frame a little differently.
+    // Most likely the present queue and graphics queue will be the same.
     if (vulkan_context.present_queue_index != vulkan_context.graphics_queue_index)
     {
         queue_create_info.queueFamilyIndex = vulkan_context.present_queue_index;
@@ -492,29 +500,19 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkBufferCreateInfo buffer_create_info = {};
     buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_create_info.size = STAGING_BUFFER_SIZE;
-    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_create_info.size = TRANSFER_BUFFER_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.staging_buffer, &renderer.staging_memory_block))
+    if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block))
     {
         // TODO: Logging
         printf("Failed to create Vulkan renderer staging buffer!\n");
         return false;
     }
 
-    renderer.staging_arena = {renderer.staging_memory_block.base, renderer.staging_memory_block.size, 0};
-
-    u32 num_vertices = 6;
-    Vertex* vertices = (Vertex*)memory_arena_reserve(&renderer.staging_arena, sizeof(Vertex) * num_vertices);
-    vertices[0].position = {-0.5, -0.5, 0, 1};
-    vertices[1].position = {-0.5, 0.5, 0, 1};
-    vertices[2].position = {0.5, 0.5, 0, 1};
-    vertices[3].position = {0.5, 0.5, 0, 1};
-    vertices[4].position = {0.5, -0.5, 0, 1};
-    vertices[5].position = {-0.5, -0.5, 0, 1};
-
+    renderer.mesh_buffer_used = 0;
     buffer_create_info.size = MESH_BUFFER_SIZE;
-    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (!allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block))
     {
         // TODO: Logging
@@ -522,30 +520,54 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
         return false;
     }
 
-    // TODO: Record command buffers using the job system
     VkCommandPoolCreateInfo command_pool_create_info = {};
     command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
+    command_pool_create_info.queueFamilyIndex = vulkan_context.transfer_queue_index;
     command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    if (vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.command_pool) != VK_SUCCESS)
+    if (vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.transfer_command_pool) != VK_SUCCESS)
     {
         // TODO: Logging
-        printf("Unable to create Vulkan renderer command pool!\n");
+        printf("Unable to create Vulkan renderer transfer command pool!\n");
+        return false;
+    }
+
+    VkFenceCreateInfo fence_create_info = {};
+    fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    if (vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.transfer_command_buffer_fence) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer fences!\n");
         return false;
     }
 
     VkCommandBufferAllocateInfo command_buffer_allocate_info = {};
     command_buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    command_buffer_allocate_info.commandPool = renderer.command_pool;
+    command_buffer_allocate_info.commandPool = renderer.transfer_command_pool;
     command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     command_buffer_allocate_info.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.transfer_command_buffer) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer command buffers!\n");
+        return false;
+    }
+
+    renderer_init_transfer_queue(&renderer.transfer_queue, renderer.transfer_memory_block.base, renderer.transfer_memory_block.size);
+
+    // TODO: Record command buffers using the job system
+    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
+    if (vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.graphics_command_pool) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Unable to create Vulkan renderer graphics command pool!\n");
+        return false;
+    }
+
+    command_buffer_allocate_info.commandPool = renderer.graphics_command_pool;
 
     VkSemaphoreCreateInfo semaphore_create_info = {};
     semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    VkFenceCreateInfo fence_create_info = {};
-    fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
@@ -557,61 +579,43 @@ bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_
             return false;
         }
 
-        if (vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].fence) != VK_SUCCESS)
+        if (vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_command_buffer_fence) != VK_SUCCESS)
         {
             // TODO: Logging
-            printf("Unable to create Vulkan renderer fence!\n");
+            printf("Unable to create Vulkan renderer fences!\n");
             return false;
         }
 
-        if (vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].command_buffer) != VK_SUCCESS)
+        if (vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].graphics_command_buffer) != VK_SUCCESS)
         {
             // TODO: Logging
             printf("Unable to create Vulkan renderer command buffers!\n");
             return false;
         }
+    }
 
-        VkCommandBufferBeginInfo command_buffer_begin_info = {};
-        command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-        if (vkBeginCommandBuffer(renderer.frame_resources[i].command_buffer, &command_buffer_begin_info) != VK_SUCCESS)
-        {
-            // TODO: Logging
-            printf("Vulkan renderer failed to begin recording command buffer!\n");
-            return false;
-        }
+    // TODO: Remove this test code
+    Renderer_Transfer_Operation* op = renderer_request_transfer(&renderer.transfer_queue, sizeof(v4) * 3);
+    if (op)
+    {
+        v4* mem = (v4*)op->memory;
+        mem[0] = v4{0, -0.5, 0, 1};
+        mem[1] = v4{0.5, 0.5, 0, 1};
+        mem[2] = v4{-0.5, 0.5, 0, 1};
+        renderer_queue_transfer(&renderer.transfer_queue, op);
+    }
 
-        VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
-        VkRenderPassBeginInfo render_pass_begin_info = {};
-        render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
-        render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[i];
-        render_pass_begin_info.renderArea.offset = {0, 0};
-        render_pass_begin_info.renderArea.extent = vulkan_context.swapchain_extent;
-        render_pass_begin_info.clearValueCount = 1;
-        render_pass_begin_info.pClearValues = &clear_color;
-
-        vkCmdBeginRenderPass(renderer.frame_resources[i].command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(renderer.frame_resources[i].command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
-
-        VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
-        vkCmdSetViewport(renderer.frame_resources[i].command_buffer, 0, 1, &viewport);
-
-        VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
-        vkCmdSetScissor(renderer.frame_resources[i].command_buffer, 0, 1, &scissor);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(renderer.frame_resources[i].command_buffer, 0, 1, &renderer.staging_buffer, &offset);
-
-        vkCmdDraw(renderer.frame_resources[i].command_buffer, num_vertices, 1, 0, 0);
-        vkCmdEndRenderPass(renderer.frame_resources[i].command_buffer);
-
-        if (vkEndCommandBuffer(renderer.frame_resources[i].command_buffer) != VK_SUCCESS)
-        {
-            // TODO: Logging
-            printf("Vulkan renderer failed to end recording command buffer!\n");
-            return false;
-        }
+    op = renderer_request_transfer(&renderer.transfer_queue, sizeof(v4) * 6);
+    if (op)
+    {
+        v4* mem = (v4*)op->memory;
+        mem[0] = v4{-0.5, -0.5, 0, 1};
+        mem[1] = v4{0.5, 0.5, 0, 1};
+        mem[2] = v4{-0.5, 0.5, 0, 1};
+        mem[3] = v4{-0.5, -0.5, 0, 1};
+        mem[4] = v4{0.5, -0.5, 0, 1};
+        mem[5] = v4{0.5, 0.5, 0, 1};
+        renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
     return true;
@@ -888,8 +892,125 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 {
     Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
 
-    wait_for_fences(&frame_resources->fence, 1);
-    vkResetFences(vulkan_context.device, 1, &frame_resources->fence);
+    // TODO: Replace with actual drawing management system
+    static bool can_draw = false;
+    if (vkGetFenceStatus(vulkan_context.device, renderer.transfer_command_buffer_fence) == VK_SUCCESS && renderer.transfer_queue.operation_count > 0)
+    {
+        VkBufferCopy copy_regions[] = {{renderer.transfer_queue.dequeue_location, renderer.mesh_buffer_used, 0}, {}};
+        u32 region_count = 0;
+
+        u64 transfer_operations = renderer.transfer_queue.operation_count;
+        u64 starting_index = ((renderer.transfer_queue.operation_index - transfer_operations) % array_count(renderer.transfer_queue.operations) + array_count(renderer.transfer_queue.operations)) % array_count(renderer.transfer_queue.operations);
+
+        for (u64 i = starting_index; i < transfer_operations; ++i)
+        {
+            Renderer_Transfer_Operation* operation = &renderer.transfer_queue.operations[i % array_count(renderer.transfer_queue.operations)];
+            if (operation->state == RENDERER_TRANSFER_OPERATION_STATE_QUEUED)
+            {
+                operation->state = RENDERER_TRANSFER_OPERATION_STATE_FINISHED;
+                atomic_decrement(&renderer.transfer_queue.operation_count);
+                can_draw = true;
+            }
+            else if (operation->state != RENDERER_TRANSFER_OPERATION_STATE_READY)
+            {
+                break;
+            }
+            else
+            {
+                u64 size = operation->size;
+                if (renderer.transfer_queue.dequeue_location + operation->size >= renderer.transfer_queue.transfer_memory_size)
+                {
+                    size = operation->size - renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.dequeue_location;
+                    copy_regions[region_count].srcOffset = 0;
+                    copy_regions[region_count].dstOffset = copy_regions[0].dstOffset + copy_regions[0].size;
+                    region_count++;
+                }
+                if (region_count == 0)
+                {
+                    region_count++;
+                }
+
+                renderer.mesh_buffer_used += size;
+                copy_regions[region_count - 1].size += size;
+                operation->state = RENDERER_TRANSFER_OPERATION_STATE_QUEUED;
+
+                renderer.transfer_queue.dequeue_location = (renderer.transfer_queue.dequeue_location + operation->size) % renderer.transfer_queue.transfer_memory_size;
+                atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, -(s64)operation->size);
+            }
+        }
+
+        if (region_count > 0)
+        {
+            vkResetFences(vulkan_context.device, 1, &renderer.transfer_command_buffer_fence);
+            vkResetCommandPool(vulkan_context.device, renderer.transfer_command_pool, 0);
+
+            // TODO: Do we need to transfer ownership of the buffer?
+            VkCommandBufferBeginInfo command_buffer_begin_info = {};
+            command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+            vkBeginCommandBuffer(renderer.transfer_command_buffer, &command_buffer_begin_info);
+            vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.mesh_buffer, region_count, copy_regions);
+            vkEndCommandBuffer(renderer.transfer_command_buffer);
+
+            VkSubmitInfo submit_info = {};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &renderer.transfer_command_buffer;
+            vkQueueSubmit(vulkan_context.transfer_queue, 1, &submit_info, renderer.transfer_command_buffer_fence);
+        }
+    }
+
+    wait_for_fences(&frame_resources->graphics_command_buffer_fence, 1);
+    vkResetFences(vulkan_context.device, 1, &frame_resources->graphics_command_buffer_fence);
+
+    // TODO: Only record command buffer when needed.
+    // Use prerecorded secondary command buffers?
+    VkCommandBufferBeginInfo command_buffer_begin_info = {};
+    command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    if (vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Vulkan renderer failed to begin recording command buffer!\n");
+        return;
+    }
+
+    VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+    VkRenderPassBeginInfo render_pass_begin_info = {};
+    render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
+    render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[frame_params->frame_number % MAX_FRAME_RESOURCES];
+    render_pass_begin_info.renderArea.offset = {0, 0};
+    render_pass_begin_info.renderArea.extent = vulkan_context.swapchain_extent;
+    render_pass_begin_info.clearValueCount = 1;
+    render_pass_begin_info.pClearValues = &clear_color;
+
+    vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
+
+    VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
+    vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
+    vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
+
+    // TODO: Replace with actual drawing management system
+    if (can_draw)
+    {
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, 1, &renderer.mesh_buffer, &offset);
+        vkCmdDraw(frame_resources->graphics_command_buffer, 6, 1, 3, 0);
+    }
+
+    vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
+
+    if (vkEndCommandBuffer(frame_resources->graphics_command_buffer) != VK_SUCCESS)
+    {
+        // TODO: Logging
+        printf("Vulkan renderer failed to end recording command buffer!\n");
+        return;
+    }
 
     // TODO: Check result and recreate swapchain/resources as necessary
     acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
@@ -900,11 +1021,11 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     submit_info.pWaitSemaphores = &frame_resources->image_available_semaphore;
     submit_info.pWaitDstStageMask = &wait_stage;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &frame_resources->command_buffer;
+    submit_info.pCommandBuffers = &frame_resources->graphics_command_buffer;
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &frame_resources->render_finished_semaphore;
 
-    if (vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, frame_resources->fence) != VK_SUCCESS)
+    if (vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, frame_resources->graphics_command_buffer_fence) != VK_SUCCESS)
     {
         // TODO: Logging
         printf("Failed to submit Vulkan command buffer!\n");

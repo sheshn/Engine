@@ -1,4 +1,5 @@
 #include "ツ.job.h"
+#include "ツ.intrinsic.h"
 
 struct Fiber
 {
@@ -46,26 +47,11 @@ struct Thread
     };
 #elif defined(__APPLE__) && defined(__MACH__)
     #define FIBER_PROC(name) void name(void* data)
-    #define THREAD_PROC(name) void* thread_proc(void* data)
+    #define THREAD_PROC(name) void* name(void* data)
 
     // TODO: Define thread and fiber stuff for other platforms
 #elif defined(__linux__)
     // TODO: Define thread and fiber stuff for other platforms
-#endif
-
-// Compiler specific atomic operations
-#if defined(_MSC_VER)
-    #include <intrin.h>
-
-    #define READ_WRITE_BARRIER _ReadWriteBarrier();
-    #define atomic_compare_exchange(dest, old_value, new_value) InterlockedCompareExchange((dest), (new_value), (old_value)) == (old_value)
-    #define atomic_increment(dest) InterlockedIncrement((dest))
-    #define atomic_decrement(dest) InterlockedDecrement((dest))
-#elif defined(__clang__)
-    #define READ_WRITE_BARRIER __asm__ __volatile__ ("" ::: "memory");
-    #define atomic_compare_exchange(dest, old_value, new_value) __sync_bool_compare_and_swap((dest), (old_value), (new_value))
-    #define atomic_increment(dest) __sync_add_and_fetch((dest), 1)
-    #define atomic_decrement(dest) __sync_sub_and_fetch((dest), 1)
 #endif
 
 struct Job_Queue_Item
@@ -347,7 +333,8 @@ FIBER_PROC(fiber_proc)
         {
             // TODO: Fix this. If all threads are asleep, no threads will ever wake up!
             // But we also want to sleep if there is no work to be done!
-            // semaphore_wait(scheduler.semaphore_handle);
+            // It works now, but might fail in the future. Or maybe it's already not working properly!
+            semaphore_wait(scheduler.semaphore_handle);
         }
         else
         {
@@ -499,6 +486,8 @@ void run_jobs_on_dedicated_thread(Job* jobs, u64 job_count, Job_Counter* counter
         if (enqueue_job(&scheduler.dedicated_thread_queue, jobs[i]))
         {
             i++;
+
+            // TODO: Maybe only signal one thread to wake up?
             semaphore_signal(scheduler.dedicated_thread_semaphore_handle);
         }
     }
@@ -526,4 +515,3 @@ void wait_for_counter(Job_Counter* counter, u64 count)
     insert_scheduler_fiber_into_list(scheduler_thread->previous_fiber_list, scheduler_thread->previous_fiber);
     spinlock_end(scheduler_thread->previous_fiber_list_lock);
 }
-

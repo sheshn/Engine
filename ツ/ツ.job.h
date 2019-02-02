@@ -28,4 +28,3 @@ void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter);
 void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter, Job_Priority priority);
 void run_jobs_on_dedicated_thread(Job* jobs, u64 job_count, Job_Counter* counter);
 void wait_for_counter(Job_Counter* counter, u64 count);
-

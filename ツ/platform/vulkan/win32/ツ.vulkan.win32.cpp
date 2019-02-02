@@ -4,9 +4,15 @@
     VK_FUNCTIONS_PLATFORM
 	PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
 
-internal HMODULE vulkan_library;
+internal HMODULE      vulkan_library;
+internal VkInstance   vulkan_instance;
+internal VkSurfaceKHR vulkan_surface;
 
-bool win32_init_vulkan(HWND window, VkInstance* vulkan_instance, VkSurfaceKHR* vulkan_surface)
+// TODO: Think more carefully about the renderer memory situation
+internal Memory_Arena vulkan_arena;
+
+// TODO: Provide the render resolution instead of window resolution
+bool win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
 {
     vulkan_library = LoadLibraryA("vulkan-1.dll");
     if (vulkan_library == NULL)
@@ -42,27 +48,36 @@ bool win32_init_vulkan(HWND window, VkInstance* vulkan_instance, VkSurfaceKHR* v
     instance_create_info.enabledExtensionCount = sizeof(enabled_extensions) / sizeof(enabled_extensions[0]);
     instance_create_info.ppEnabledExtensionNames = enabled_extensions;
 
-    if (vkCreateInstance(&instance_create_info, NULL, vulkan_instance) != VK_SUCCESS)
+    if (vkCreateInstance(&instance_create_info, NULL, &vulkan_instance) != VK_SUCCESS)
     {
         // TODO: Logging
         printf("Unable to create Vulkan instance!\n");
         return false;
     }
 
-    vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(*vulkan_instance, "vkCreateWin32SurfaceKHR");
+    vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(vulkan_instance, "vkCreateWin32SurfaceKHR");
 
     VkWin32SurfaceCreateInfoKHR surface_create_info = {};
     surface_create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     surface_create_info.hwnd = window;
     surface_create_info.hinstance = GetModuleHandle(NULL);
 
-    if (vkCreateWin32SurfaceKHR(*vulkan_instance, &surface_create_info, NULL, vulkan_surface) != VK_SUCCESS)
+    if (vkCreateWin32SurfaceKHR(vulkan_instance, &surface_create_info, NULL, &vulkan_surface) != VK_SUCCESS)
     {
         // TODO: Logging
         printf("Unable to create Vulkan win32 surface!\n");
         return false;
     }
 
+    u64 memory_size = 64 * 1024 * 1024;
+    vulkan_arena = {allocate_memory(memory_size), memory_size, 0};
+
+    if (!init_renderer_vulkan(vulkan_instance, vulkan_surface, window_width, window_height, &vulkan_arena))
+    {
+        // TODO: Logging
+        printf("Unable to initialize Vulkan renderer!\n");
+        return false;
+    }
+
     return true;
 }
-
