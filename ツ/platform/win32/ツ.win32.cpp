@@ -14,18 +14,18 @@
 
 #define MAX_FRAMES 16
 
-global u32 window_width = 800;
-global u32 window_height = 600;
-global bool running = false;
+internal u32 window_width = 800;
+internal u32 window_height = 600;
+internal b32 running = false;
 
 u8* allocate_memory(u64 size)
 {
     return (u8*)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
-bool DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8** data)
+b32 DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8** data)
 {
-    bool result = false;
+    b32 result = false;
 
     HANDLE file_handle = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     LARGE_INTEGER file_size;
@@ -50,7 +50,7 @@ bool DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8**
     }
 
     CloseHandle(file_handle);
-    return true;
+    return result;
 }
 
 LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
@@ -78,7 +78,7 @@ HWND create_window()
     WNDCLASS window_class = {};
     window_class.style = CS_HREDRAW | CS_VREDRAW;
     window_class.hInstance = GetModuleHandle(NULL);
-    window_class.lpszClassName = "Engine";
+    window_class.lpszClassName = "win32.engine";
     window_class.lpfnWndProc = window_callback;
 
     if (!RegisterClass(&window_class))
@@ -116,6 +116,11 @@ JOB_ENTRY_POINT(render_entry_point)
         wait_for_counter(&frame_params->previous->render_counter, 0);
     }
 
+    // TODO: Remove this test code
+    Renderer_Resource_Handle handle = {0};
+    renderer_begin_frame(frame_params);
+    renderer_draw_buffer(handle, 64 * 4, 6);
+    renderer_end_frame();
     // printf("RENDER %lld\n", frame_params->frame_number);
 }
 
@@ -152,6 +157,7 @@ int main()
     {
         // TODO: Logging
         printf("Failed to create window!\n");
+        return 1;
     }
 
     // TODO: Get system thread count

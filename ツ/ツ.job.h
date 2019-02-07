@@ -23,7 +23,7 @@ struct Job
 
 u32  get_thread_id();
 u64  get_thread_count();
-bool init_job_system(u32 thread_count, u32 dedicated_thread_count);
+b32  init_job_system(u32 thread_count, u32 dedicated_thread_count);
 void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter);
 void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter, Job_Priority priority);
 void run_jobs_on_dedicated_thread(Job* jobs, u64 job_count, Job_Counter* counter);

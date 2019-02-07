@@ -1,4 +1,5 @@
 #include "ツ.vulkan.win32.h"
+#include "../../../ツ.platform.h"
 
 #define VK_FUNCTION(function) PFN_##function function;
     VK_FUNCTIONS_PLATFORM
@@ -12,13 +13,13 @@ internal VkSurfaceKHR vulkan_surface;
 internal Memory_Arena vulkan_arena;
 
 // TODO: Provide the render resolution instead of window resolution
-bool win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
+b32 win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
 {
     vulkan_library = LoadLibraryA("vulkan-1.dll");
     if (vulkan_library == NULL)
     {
         // TODO: Logging
-        printf("Unable able to load Vulkan dll!\n");
+        printf("Unable to load Vulkan dll!\n");
         return false;
     }
 
@@ -27,7 +28,7 @@ bool win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height
 
     VkApplicationInfo application_info = {};
     application_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    application_info.pApplicationName = "win32.Engine";
+    application_info.pApplicationName = "win32.engine";
     application_info.applicationVersion = VK_MAKE_VERSION(0, 0, 1);
     application_info.pEngineName = "win32.engine";
     application_info.engineVersion = VK_MAKE_VERSION(0, 0, 1);
@@ -47,13 +48,7 @@ bool win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height
 
     instance_create_info.enabledExtensionCount = sizeof(enabled_extensions) / sizeof(enabled_extensions[0]);
     instance_create_info.ppEnabledExtensionNames = enabled_extensions;
-
-    if (vkCreateInstance(&instance_create_info, NULL, &vulkan_instance) != VK_SUCCESS)
-    {
-        // TODO: Logging
-        printf("Unable to create Vulkan instance!\n");
-        return false;
-    }
+    assert(vkCreateInstance(&instance_create_info, NULL, &vulkan_instance) == VK_SUCCESS);
 
     vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(vulkan_instance, "vkCreateWin32SurfaceKHR");
 
@@ -61,23 +56,11 @@ bool win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height
     surface_create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     surface_create_info.hwnd = window;
     surface_create_info.hinstance = GetModuleHandle(NULL);
-
-    if (vkCreateWin32SurfaceKHR(vulkan_instance, &surface_create_info, NULL, &vulkan_surface) != VK_SUCCESS)
-    {
-        // TODO: Logging
-        printf("Unable to create Vulkan win32 surface!\n");
-        return false;
-    }
+    assert(vkCreateWin32SurfaceKHR(vulkan_instance, &surface_create_info, NULL, &vulkan_surface) == VK_SUCCESS);
 
     u64 memory_size = 64 * 1024 * 1024;
     vulkan_arena = {allocate_memory(memory_size), memory_size, 0};
 
-    if (!init_renderer_vulkan(vulkan_instance, vulkan_surface, window_width, window_height, &vulkan_arena))
-    {
-        // TODO: Logging
-        printf("Unable to initialize Vulkan renderer!\n");
-        return false;
-    }
-
+    init_vulkan_renderer(vulkan_instance, vulkan_surface, window_width, window_height, &vulkan_arena);
     return true;
 }

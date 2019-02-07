@@ -82,7 +82,7 @@ internal void init_job_queue(Job_Queue* queue)
     }
 }
 
-internal bool enqueue_job(Job_Queue* queue, Job job)
+internal b32 enqueue_job(Job_Queue* queue, Job job)
 {
     u64 enqueue_index = queue->enqueue_index;
     while (true)
@@ -115,7 +115,7 @@ internal bool enqueue_job(Job_Queue* queue, Job job)
     return false;
 }
 
-internal bool dequeue_job(Job_Queue* queue, Job* job)
+internal b32 dequeue_job(Job_Queue* queue, Job* job)
 {
     u64 dequeue_index = queue->dequeue_index;
     while (true)
@@ -386,7 +386,7 @@ u64 get_thread_count()
     return scheduler.thread_count;
 }
 
-bool init_job_system(u32 thread_count, u32 dedicated_thread_count)
+b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
 {
     assert(thread_count <= MAX_THREAD_COUNT);
     scheduler.semaphore_handle = create_semaphore(thread_count);

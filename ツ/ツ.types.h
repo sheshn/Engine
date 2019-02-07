@@ -12,10 +12,10 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 typedef float    f32;
 typedef double   f64;
+typedef s32      b32;
 
 #define internal static
 #define external extern
-#define global   static
 
 #define U32_MAX 0xFFFFFFFF
 #define U64_MAX 0xFFFFFFFFFFFFFFFFUL

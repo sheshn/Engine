@@ -26,7 +26,7 @@ typedef uint64_t VkDeviceSize;
 typedef uint32_t VkSampleMask;
 
 #define VK_DEFINE_HANDLE(object) typedef struct object##_T* object;
-#define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T *object;
+#define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T* object;
 VK_DEFINE_HANDLE(VkInstance)
 VK_DEFINE_HANDLE(VkPhysicalDevice)
 VK_DEFINE_HANDLE(VkDevice)
@@ -2379,6 +2379,21 @@ typedef struct VkBufferImageCopy {
     VkExtent3D                  imageExtent;
 } VkBufferImageCopy;
 
+typedef struct VkDrawIndexedIndirectCommand {
+    uint32_t    indexCount;
+    uint32_t    instanceCount;
+    uint32_t    firstIndex;
+    int32_t     vertexOffset;
+    uint32_t    firstInstance;
+} VkDrawIndexedIndirectCommand;
+
+typedef struct VkDrawIndirectCommand {
+    uint32_t    vertexCount;
+    uint32_t    instanceCount;
+    uint32_t    firstVertex;
+    uint32_t    firstInstance;
+} VkDrawIndirectCommand;
+
 typedef void (VKAPI_PTR *PFN_vkDestroySurfaceKHR)(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks* pAllocator);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32* pSupported);
 typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR* pSurfaceCapabilities);
@@ -2414,7 +2429,9 @@ typedef void (VKAPI_PTR *PFN_vkUnmapMemory)(VkDevice device, VkDeviceMemory memo
 typedef VkResult (VKAPI_PTR *PFN_vkCreateBuffer)(VkDevice device, const VkBufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBuffer* pBuffer);
 typedef void (VKAPI_PTR *PFN_vkDestroyBuffer)(VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* pAllocator);
 typedef VkResult (VKAPI_PTR *PFN_vkBindBufferMemory)(VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset);
+typedef VkResult (VKAPI_PTR *PFN_vkBindImageMemory)(VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize memoryOffset);
 typedef void (VKAPI_PTR *PFN_vkGetBufferMemoryRequirements)(VkDevice device, VkBuffer buffer, VkMemoryRequirements* pMemoryRequirements);
+typedef void (VKAPI_PTR *PFN_vkGetImageMemoryRequirements)(VkDevice device, VkImage image, VkMemoryRequirements* pMemoryRequirements);
 typedef VkResult (VKAPI_PTR *PFN_vkCreatePipelineLayout)(VkDevice device, const VkPipelineLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineLayout* pPipelineLayout);
 typedef VkResult (VKAPI_PTR *PFN_vkCreateShaderModule)(VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule);
 typedef void (VKAPI_PTR *PFN_vkDestroyShaderModule)(VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator);
@@ -2437,6 +2454,7 @@ typedef void (VKAPI_PTR *PFN_vkCmdBindPipeline)(VkCommandBuffer commandBuffer, V
 typedef void (VKAPI_PTR *PFN_vkCmdSetViewport)(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport* pViewports);
 typedef void (VKAPI_PTR *PFN_vkCmdSetScissor)(VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D* pScissors);
 typedef void (VKAPI_PTR *PFN_vkCmdDraw)(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance);
+typedef void (VKAPI_PTR *PFN_vkCmdDrawIndexed)(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance);
 typedef VkResult (VKAPI_PTR *PFN_vkCreateFence)(VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence);
 typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence* pFences);
 typedef VkResult (VKAPI_PTR *PFN_vkGetFenceStatus)(VkDevice device, VkFence fence);
@@ -2498,7 +2516,9 @@ typedef void (VKAPI_PTR *PFN_vkCmdDrawIndexedIndirectCountKHR)(VkCommandBuffer c
         VK_FUNCTION(vkCreateShaderModule)             \
         VK_FUNCTION(vkDestroyShaderModule)            \
         VK_FUNCTION(vkBindBufferMemory)               \
+        VK_FUNCTION(vkBindImageMemory)                \
         VK_FUNCTION(vkGetBufferMemoryRequirements)    \
+        VK_FUNCTION(vkGetImageMemoryRequirements)     \
         VK_FUNCTION(vkCreatePipelineLayout)           \
         VK_FUNCTION(vkCreateGraphicsPipelines)        \
         VK_FUNCTION(vkCreateRenderPass)               \
@@ -2523,6 +2543,7 @@ typedef void (VKAPI_PTR *PFN_vkCmdDrawIndexedIndirectCountKHR)(VkCommandBuffer c
         VK_FUNCTION(vkCmdSetViewport)                 \
         VK_FUNCTION(vkCmdSetScissor)                  \
         VK_FUNCTION(vkCmdDraw)                        \
+        VK_FUNCTION(vkCmdDrawIndexed)                 \
         VK_FUNCTION(vkCmdBindIndexBuffer)             \
         VK_FUNCTION(vkCmdBindVertexBuffers)           \
         VK_FUNCTION(vkCmdCopyBuffer)                  \
@@ -2531,4 +2552,4 @@ typedef void (VKAPI_PTR *PFN_vkCmdDrawIndexedIndirectCountKHR)(VkCommandBuffer c
     VK_FUNCTIONS_DEVICE
 #undef VK_FUNCTION
 
-bool init_renderer_vulkan(VkInstance instance, VkSurfaceKHR surface, u32 window_width, u32 window_height, Memory_Arena* memory_arena);
+void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_width, u32 window_height, Memory_Arena* memory_arena);
