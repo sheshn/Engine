@@ -28,7 +28,7 @@
 #define TEXTURE_MEMORY_SIZE  (256 * 1024 * 1024)
 
 #define MAX_DRAW_CALLS_PER_FRAME 15000
-#define DRAW_CALLS_MEMORY_SIZE   (3 * MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
+#define DRAW_CALLS_MEMORY_SIZE   (MAX_FRAME_RESOURCES * MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
 
 struct Vulkan_Context
 {
@@ -208,6 +208,8 @@ struct Renderer
 
     Vulkan_Memory_Block texture_memory_block;
     u64                 texture_memory_used;
+
+    VkSampler texture_2d_sampler;
 
     Frame_Resources* current_render_frame;
 };
@@ -467,16 +469,49 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     buffer_create_info.size = TRANSFER_MEMORY_SIZE;
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // TODO: Replace with HOST_CACHED
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
 
     buffer_create_info.size = DRAW_CALLS_MEMORY_SIZE;
     buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.draw_buffer, &renderer.draw_memory_block);
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.draw_buffer, &renderer.draw_memory_block);
 
     renderer.mesh_buffer_used = 0;
     buffer_create_info.size = MESH_MEMORY_SIZE;
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block);
+
+    // NOTE: Creating a dummy image to get memory type bits in order to allocate texture memory.
+    // All 2D textures that will need to use this memory should have the same memory requirements.
+    VkImageCreateInfo image_create_info = {};
+    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkImage dummy_image;
+    VK_CALL(vkCreateImage(vulkan_context.device, &image_create_info, NULL, &dummy_image));
+    VkMemoryRequirements image_memory_requirements;
+    vkGetImageMemoryRequirements(vulkan_context.device, dummy_image, &image_memory_requirements);
+
+    renderer.texture_memory_block = allocate_vulkan_memory_block(TEXTURE_MEMORY_SIZE, get_memory_type_index(image_memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+    vkDestroyImage(vulkan_context.device, dummy_image, NULL);
+
+    VkSamplerCreateInfo sampler_create_info = {};
+    sampler_create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_create_info.magFilter = VK_FILTER_LINEAR;
+    sampler_create_info.minFilter = VK_FILTER_LINEAR;
+    sampler_create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_create_info.addressModeV = sampler_create_info.addressModeU;
+    sampler_create_info.addressModeW = sampler_create_info.addressModeU;
+    sampler_create_info.anisotropyEnable = vulkan_context.physical_device_features.samplerAnisotropy;
+    sampler_create_info.maxAnisotropy = sampler_create_info.anisotropyEnable ? vulkan_context.physical_device_properties.limits.maxSamplerAnisotropy : 1.0f;
+    sampler_create_info.maxLod = vulkan_context.physical_device_properties.limits.maxSamplerLodBias;
+    sampler_create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.texture_2d_sampler));
 
     VkCommandPoolCreateInfo command_pool_create_info = {};
     command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -507,6 +542,12 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkSemaphoreCreateInfo semaphore_create_info = {};
     semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
+    // NOTE: Make sure per frame draw buffers are aligned to the non coherent atom size since we are using HOST_CACHED memory.
+    // We are subtracting the size of the buffer if we are not a multiple of the correct alignment.
+    // This means MAX_DRAW_CALLS_PER_FRAME is technically not correct (it is actually less).
+    u64 per_frame_draw_buffer_size = DRAW_CALLS_MEMORY_SIZE / MAX_FRAME_RESOURCES;
+    per_frame_draw_buffer_size = (per_frame_draw_buffer_size - 1) - ((per_frame_draw_buffer_size - 1) % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize);
+
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
         VK_CALL(vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].image_available_semaphore));
@@ -514,8 +555,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_command_buffer_fence));
         VK_CALL(vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].graphics_command_buffer));
 
-        renderer.frame_resources[i].draw_call_count = (u32*)(renderer.draw_memory_block.base + i * (sizeof(VkDrawIndexedIndirectCommand) * MAX_DRAW_CALLS_PER_FRAME + sizeof(u32)));
-        renderer.frame_resources[i].draw_command_arena = Memory_Arena{((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), sizeof(VkDrawIndexedIndirectCommand) * MAX_DRAW_CALLS_PER_FRAME};
+        renderer.frame_resources[i].draw_call_count = (u32*)(renderer.draw_memory_block.base + i * per_frame_draw_buffer_size);
+        renderer.frame_resources[i].draw_command_arena = Memory_Arena{((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), per_frame_draw_buffer_size - sizeof(u32)};
     }
 
     // TODO: Remove this test code
@@ -778,7 +819,11 @@ void renderer_draw_buffer(Renderer_Resource_Handle buffer, u32 index_offset, u32
 {
     assert(renderer.current_render_frame);
 
-    *renderer.current_render_frame->draw_call_count = *renderer.current_render_frame->draw_call_count + 1;
+    u32 current_draw_call_count = *renderer.current_render_frame->draw_call_count;
+    // TODO: Remove this? (assert should be caught by memory_arena_reserve). Think about whether MAX_DRAW_CALLS_PER_FRAME should be a thing.
+    assert(current_draw_call_count <= MAX_DRAW_CALLS_PER_FRAME);
+
+    *renderer.current_render_frame->draw_call_count = current_draw_call_count + 1;
     VkDrawIndexedIndirectCommand* draw_command = (VkDrawIndexedIndirectCommand*)memory_arena_reserve(&renderer.current_render_frame->draw_command_arena, sizeof(VkDrawIndexedIndirectCommand));
     draw_command->indexCount = index_count;
     draw_command->instanceCount = 1;
@@ -789,7 +834,15 @@ void renderer_draw_buffer(Renderer_Resource_Handle buffer, u32 index_offset, u32
 
 void renderer_end_frame()
 {
-    // TODO: Not sure what to do here just yet
+    assert(renderer.current_render_frame);
+
+    VkMappedMemoryRange range = {};
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = renderer.draw_memory_block.device_memory;
+    range.offset = (u8*)renderer.current_render_frame->draw_call_count - renderer.draw_memory_block.base;
+    range.size = *renderer.current_render_frame->draw_call_count * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32);
+    range.size = (range.size - 1) - ((range.size - 1) % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize) + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+    VK_CALL(vkFlushMappedMemoryRanges(vulkan_context.device, 1, &range));
 }
 
 void renderer_submit_frame(Frame_Parameters* frame_params)
