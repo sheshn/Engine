@@ -398,6 +398,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sampler_layout_binding.pImmutableSamplers = &renderer.texture_2d_sampler;
 
+    // TODO: Validation layer is complaining if we use less than renderer.max_2d_textures. Fix that!
     VkDescriptorSetLayoutBinding texture_2d_layout_binding = {};
     texture_2d_layout_binding.binding = 1;
     texture_2d_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -631,18 +632,32 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         renderer.frame_resources[i].draw_command_arena = Memory_Arena{((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), per_frame_draw_buffer_size - sizeof(u32)};
     }
 
+
     // TODO: Remove this test code
-    // Do we really want to do it like this?
+    u8* texture_data;
+    u64 texture_size = 0;
+    assert(DEBUG_read_file("../data/image1.tsu", vulkan_context.memory_arena, &texture_size, &texture_data));
+    Renderer_Texture renderer_texture = renderer_create_texture_reference(0, 512, 512);
+
+    Renderer_Transfer_Operation* op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, texture_size);
+    if (op)
+    {
+        op->texture = renderer_texture;
+        memcpy(op->memory, texture_data, texture_size);
+        renderer_queue_transfer(&renderer.transfer_queue, op);
+    }
+
+    // TODO: Remove this test code
     Renderer_Buffer renderer_buffer = renderer_create_buffer_reference(0);
-    Renderer_Transfer_Operation* op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER, sizeof(v4) * 4 + sizeof(u32) * 6);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER, sizeof(v4) * 4 + sizeof(u32) * 6);
     if (op)
     {
         op->buffer = renderer_buffer;
         v4* mem = (v4*)op->memory;
-        mem[0] = v4{-0.5, -0.5, 0, 1};
-        mem[1] = v4{0.5, -0.5, 0, 1};
-        mem[2] = v4{0.5, 0.5, 0, 1};
-        mem[3] = v4{-0.5, 0.5, 0, 1};
+        mem[0] = v4{-0.5, -0.5, 0, 0};
+        mem[1] = v4{ 0.5, -0.5, 1, 0};
+        mem[2] = v4{ 0.5,  0.5, 1, 1};
+        mem[3] = v4{-0.5,  0.5, 0, 1};
 
         u32* index_buffer = (u32*)(op->memory + sizeof(v4) * 4);
         index_buffer[0] = 0;
@@ -1004,6 +1019,17 @@ internal void resolve_pending_transfer_operations()
                         height = max(1, height >> 1);
                     }
 
+                    VkDescriptorImageInfo image_info = {NULL, texture->image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                    VkWriteDescriptorSet texture_write = {};
+                    texture_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    texture_write.dstSet = renderer.descriptor_set;
+                    texture_write.dstBinding = 1;
+                    texture_write.dstArrayElement = operation->texture.id;
+                    texture_write.descriptorCount = 1;
+                    texture_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                    texture_write.pImageInfo = &image_info;
+                    vkUpdateDescriptorSets(vulkan_context.device, 1, &texture_write, 0, NULL);
+
                     renderer.texture_memory_used += buffer_offset - src_offset;
                     create_new_mesh_buffer_copy = true;
                 } break;
@@ -1065,7 +1091,6 @@ internal void resolve_pending_transfer_operations()
                     texture_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
                     texture_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
                 }
-
             }
 
             vkCmdPipelineBarrier(renderer.transfer_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, mesh_copy_count, buffer_barriers, texture_barrier_count, texture_barriers);
@@ -1151,6 +1176,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
     vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
+    vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, 1, &renderer.descriptor_set, 0, NULL);
 
     VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
     vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);

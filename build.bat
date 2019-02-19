@@ -19,6 +19,9 @@ call %VK_SDK_PATH%\Bin\glslangValidator.exe -t -V -o ..\%SHADERS%\fragment.spv p
 popd
 
 pushd %BUILD_DIR%
+rem Asset Builder
+rem cl /utf-8 /std:c++latest /O2 /D_CRT_SECURE_NO_WARNINGS /DUNICODE /W3 /Zi /MDd /EHsc /Fointermediates\ /nologo ..\tools\%CURRENT_FOLDER%.asset.builder.cpp kernel32.lib user32.lib /link /OUT:%CURRENT_FOLDER%.asset.builder.exe /INCREMENTAL:NO /NOLOGO
+
 rem Vulkan Generator
 rem cl /utf-8 /std:c++latest /O2 /D_CRT_SECURE_NO_WARNINGS /DUNICODE /W3 /Zi /MDd /EHsc /Fointermediates\ /nologo ..\tools\%CURRENT_FOLDER%.vulkan.generator.cpp kernel32.lib user32.lib /link /OUT:%CURRENT_FOLDER%.vulkan.generator.exe /INCREMENTAL:NO /NOLOGO
 call %CURRENT_FOLDER%.vulkan.generator.exe %VK_SDK_PATH%\Include\vulkan\vulkan_core.h ..\%CURRENT_FOLDER%\platform\vulkan\%CURRENT_FOLDER%.vulkan.cpp ..\%CURRENT_FOLDER%\platform\vulkan\%CURRENT_FOLDER%.vulkan.generated.h

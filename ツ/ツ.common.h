@@ -3,7 +3,7 @@
 #include "ツ.job.h"
 
 #if defined(DEBUG)
-    #define assert(condition) do { if (!(condition)) { *(volatile int*)0 = 0; } } while (0)
+    #define assert(condition) do { if (!(condition)) { *(volatile u32*)0 = 0; } } while (0)
 #else
     #define assert(condition)
 #endif

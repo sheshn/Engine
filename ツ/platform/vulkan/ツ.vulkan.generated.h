@@ -2301,6 +2301,45 @@ struct VkImageMemoryBarrier
 	VkImageSubresourceRange subresourceRange;
 };
 #define VK_QUEUE_FAMILY_IGNORED (~0U)
+struct VkDescriptorImageInfo
+{
+	VkSampler sampler;
+	VkImageView imageView;
+	VkImageLayout imageLayout;
+};
+struct VkDescriptorBufferInfo
+{
+	VkBuffer buffer;
+	VkDeviceSize offset;
+	VkDeviceSize range;
+};
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkBufferView)
+struct VkWriteDescriptorSet
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorSet dstSet;
+	uint32_t dstBinding;
+	uint32_t dstArrayElement;
+	uint32_t descriptorCount;
+	VkDescriptorType descriptorType;
+	const VkDescriptorImageInfo*pImageInfo;
+	const VkDescriptorBufferInfo*pBufferInfo;
+	const VkBufferView*pTexelBufferView;
+};
+struct VkCopyDescriptorSet
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorSet srcSet;
+	uint32_t srcBinding;
+	uint32_t srcArrayElement;
+	VkDescriptorSet dstSet;
+	uint32_t dstBinding;
+	uint32_t dstArrayElement;
+	uint32_t descriptorCount;
+};
+typedef void (VKAPI_PTR *PFN_vkUpdateDescriptorSets)(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet*pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet*pDescriptorCopies);
 typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence*pFences);
 typedef VkFlags VkCommandPoolResetFlags;
 typedef VkResult (VKAPI_PTR *PFN_vkResetCommandPool)(VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags);
@@ -2415,6 +2454,7 @@ enum VkSubpassContents
 };
 typedef void (VKAPI_PTR *PFN_vkCmdBeginRenderPass)(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo*pRenderPassBegin, VkSubpassContents contents);
 typedef void (VKAPI_PTR *PFN_vkCmdBindPipeline)(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline);
+typedef void (VKAPI_PTR *PFN_vkCmdBindDescriptorSets)(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet*pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t*pDynamicOffsets);
 typedef void (VKAPI_PTR *PFN_vkCmdSetViewport)(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport*pViewports);
 typedef void (VKAPI_PTR *PFN_vkCmdSetScissor)(VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D*pScissors);
 typedef void (VKAPI_PTR *PFN_vkCmdBindVertexBuffers)(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer*pBuffers, const VkDeviceSize*pOffsets);
@@ -2505,6 +2545,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkAcquireNextImageKHR) \
 		VK_FUNCTION(vkWaitForFences) \
 		VK_FUNCTION(vkGetFenceStatus) \
+		VK_FUNCTION(vkUpdateDescriptorSets) \
 		VK_FUNCTION(vkResetFences) \
 		VK_FUNCTION(vkResetCommandPool) \
 		VK_FUNCTION(vkBeginCommandBuffer) \
@@ -2516,6 +2557,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkFlushMappedMemoryRanges) \
 		VK_FUNCTION(vkCmdBeginRenderPass) \
 		VK_FUNCTION(vkCmdBindPipeline) \
+		VK_FUNCTION(vkCmdBindDescriptorSets) \
 		VK_FUNCTION(vkCmdSetViewport) \
 		VK_FUNCTION(vkCmdSetScissor) \
 		VK_FUNCTION(vkCmdBindVertexBuffers) \
