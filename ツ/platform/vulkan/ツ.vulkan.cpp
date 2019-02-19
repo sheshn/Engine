@@ -23,10 +23,11 @@
 
 #define MAX_SWAPCHAIN_IMAGES 3
 #define MAX_FRAME_RESOURCES  3
-#define TRANSFER_MEMORY_SIZE (64 * 1024 * 1024)
-#define MESH_MEMORY_SIZE     (256 * 1024 * 1024)
-#define TEXTURE_MEMORY_SIZE  (256 * 1024 * 1024)
+#define TRANSFER_MEMORY_SIZE megabytes(32)
+#define MESH_MEMORY_SIZE     megabytes(256)
+#define TEXTURE_MEMORY_SIZE  megabytes(256)
 
+#define MAX_2D_TEXTURES          2048
 #define MAX_DRAW_CALLS_PER_FRAME 15000
 #define DRAW_CALLS_MEMORY_SIZE   (MAX_FRAME_RESOURCES * MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
 
@@ -170,6 +171,17 @@ internal void allocate_vulkan_image(VkImageCreateInfo* image_create_info, VkMemo
     memory_block->used += memory_requirements.size;
 }
 
+struct Vulkan_Buffer
+{
+    u32 offset;
+};
+
+struct Vulkan_Texture
+{
+    VkImage     image;
+    VkImageView image_view;
+};
+
 struct Frame_Resources
 {
     VkCommandBuffer graphics_command_buffer;
@@ -210,6 +222,15 @@ struct Renderer
     u64                 texture_memory_used;
 
     VkSampler texture_2d_sampler;
+    VkFormat  texture_2d_format;
+    u32       max_2d_textures;
+
+    Vulkan_Buffer*  buffers;
+    Vulkan_Texture* textures;
+
+    VkDescriptorSetLayout descriptor_set_layout;
+    VkDescriptorPool      descriptor_pool;
+    VkDescriptorSet       descriptor_set;
 
     Frame_Resources* current_render_frame;
 };
@@ -354,9 +375,66 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     // NOTE: Recreate swapchain to initialize it the first time
     recreate_swapchain(window_width, window_height);
 
+    renderer.max_2d_textures = min(MAX_2D_TEXTURES, vulkan_context.physical_device_properties.limits.maxPerStageDescriptorSampledImages);
+
+    VkSamplerCreateInfo sampler_create_info = {};
+    sampler_create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_create_info.magFilter = VK_FILTER_LINEAR;
+    sampler_create_info.minFilter = VK_FILTER_LINEAR;
+    sampler_create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_create_info.addressModeV = sampler_create_info.addressModeU;
+    sampler_create_info.addressModeW = sampler_create_info.addressModeU;
+    sampler_create_info.anisotropyEnable = vulkan_context.physical_device_features.samplerAnisotropy;
+    sampler_create_info.maxAnisotropy = sampler_create_info.anisotropyEnable ? vulkan_context.physical_device_properties.limits.maxSamplerAnisotropy : 1.0f;
+    sampler_create_info.maxLod = vulkan_context.physical_device_properties.limits.maxSamplerLodBias;
+    sampler_create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.texture_2d_sampler));
+
+    VkDescriptorSetLayoutBinding sampler_layout_binding = {};
+    sampler_layout_binding.binding = 0;
+    sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    sampler_layout_binding.descriptorCount = 1;
+    sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    sampler_layout_binding.pImmutableSamplers = &renderer.texture_2d_sampler;
+
+    VkDescriptorSetLayoutBinding texture_2d_layout_binding = {};
+    texture_2d_layout_binding.binding = 1;
+    texture_2d_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    texture_2d_layout_binding.descriptorCount = renderer.max_2d_textures;
+    texture_2d_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding};
+    VkDescriptorSetLayoutCreateInfo layout_create_info = {};
+    layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_create_info.bindingCount = array_count(layout_bindings);
+    layout_create_info.pBindings = layout_bindings;
+    VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &layout_create_info, NULL, &renderer.descriptor_set_layout));
+
+    VkDescriptorPoolSize sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
+    VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + 1};
+    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size};
+
+    VkDescriptorPoolCreateInfo descriptor_pool_create_info = {};
+    descriptor_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    descriptor_pool_create_info.poolSizeCount = array_count(descriptor_pool_sizes);
+    descriptor_pool_create_info.pPoolSizes = descriptor_pool_sizes;
+    descriptor_pool_create_info.maxSets = 1;
+    VK_CALL(vkCreateDescriptorPool(vulkan_context.device, &descriptor_pool_create_info, NULL, &renderer.descriptor_pool));
+
+    // TODO: Create descriptor set for each frame resource (triple buffer)?
+    VkDescriptorSetAllocateInfo descriptor_set_allocate_info = {};
+    descriptor_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptor_set_allocate_info.descriptorPool = renderer.descriptor_pool;
+    descriptor_set_allocate_info.descriptorSetCount = 1;
+    descriptor_set_allocate_info.pSetLayouts = &renderer.descriptor_set_layout;
+    VK_CALL(vkAllocateDescriptorSets(vulkan_context.device, &descriptor_set_allocate_info, &renderer.descriptor_set));
+
     // TODO: Make it easier to create piplines!
     VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
     pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_create_info.setLayoutCount = 1;
+    pipeline_layout_create_info.pSetLayouts = &renderer.descriptor_set_layout;
     VK_CALL(vkCreatePipelineLayout(vulkan_context.device, &pipeline_layout_create_info, NULL, &renderer.pipeline_layout));
 
     VkVertexInputBindingDescription vertex_binding_description = {};
@@ -481,13 +559,17 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block);
 
+    // NOTE: Using BC7 format for all 2D textures for now
+    renderer.texture_2d_format = VK_FORMAT_BC7_UNORM_BLOCK;
+
     // NOTE: Creating a dummy image to get memory type bits in order to allocate texture memory.
     // All 2D textures that will need to use this memory should have the same memory requirements.
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.imageType = VK_IMAGE_TYPE_2D;
-    image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_create_info.format = renderer.texture_2d_format;
     image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -499,19 +581,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     renderer.texture_memory_block = allocate_vulkan_memory_block(TEXTURE_MEMORY_SIZE, get_memory_type_index(image_memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
     vkDestroyImage(vulkan_context.device, dummy_image, NULL);
 
-    VkSamplerCreateInfo sampler_create_info = {};
-    sampler_create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sampler_create_info.magFilter = VK_FILTER_LINEAR;
-    sampler_create_info.minFilter = VK_FILTER_LINEAR;
-    sampler_create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_create_info.addressModeV = sampler_create_info.addressModeU;
-    sampler_create_info.addressModeW = sampler_create_info.addressModeU;
-    sampler_create_info.anisotropyEnable = vulkan_context.physical_device_features.samplerAnisotropy;
-    sampler_create_info.maxAnisotropy = sampler_create_info.anisotropyEnable ? vulkan_context.physical_device_properties.limits.maxSamplerAnisotropy : 1.0f;
-    sampler_create_info.maxLod = vulkan_context.physical_device_properties.limits.maxSamplerLodBias;
-    sampler_create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.texture_2d_sampler));
+    // TODO: How many buffer slots should be reserved?
+    renderer.buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
+    renderer.textures = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Texture, renderer.max_2d_textures);
 
     VkCommandPoolCreateInfo command_pool_create_info = {};
     command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -561,11 +633,11 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // TODO: Remove this test code
     // Do we really want to do it like this?
-    Renderer_Resource_Handle handle;
-    Renderer_Transfer_Operation* op = renderer_request_transfer(&renderer.transfer_queue, sizeof(v4) * 4 + sizeof(u32) * 6);
+    Renderer_Buffer renderer_buffer = renderer_create_buffer_reference(0);
+    Renderer_Transfer_Operation* op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER, sizeof(v4) * 4 + sizeof(u32) * 6);
     if (op)
     {
-        op->handle = &handle;
+        op->buffer = renderer_buffer;
         v4* mem = (v4*)op->memory;
         mem[0] = v4{-0.5, -0.5, 0, 1};
         mem[1] = v4{0.5, -0.5, 0, 1};
@@ -685,7 +757,7 @@ internal void recreate_swapchain(u32 width, u32 height)
 
     vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, NULL);
 
-    // This might fail if image_count is greater than MAX_SWAPCHAIN_IMAGES! I don't know!
+    // NOTE: This might fail if image_count is greater than MAX_SWAPCHAIN_IMAGES! I don't know!
     // This shouldn't be a problem since we will probably get exactly MAX_SWAPCHAIN_IMAGES images anyways
     vulkan_context.swapchain_image_count = min(image_count, MAX_SWAPCHAIN_IMAGES);
     vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, &vulkan_context.swapchain_images[0]);
@@ -807,6 +879,209 @@ internal VkResult wait_for_fences(VkFence* fences, u32 fence_count)
     return result;
 }
 
+internal void resolve_pending_transfer_operations()
+{
+    if (vkGetFenceStatus(vulkan_context.device, renderer.transfer_command_buffer_fence) == VK_SUCCESS && renderer.transfer_queue.operation_count > 0)
+    {
+        u64 transfer_operations = renderer.transfer_queue.operation_count;
+        u64 starting_index = ((renderer.transfer_queue.operation_index - transfer_operations) % array_count(renderer.transfer_queue.operations) + array_count(renderer.transfer_queue.operations)) % array_count(renderer.transfer_queue.operations);
+
+        Memory_Arena_Marker memory_arena_marker = memory_arena_get_marker(vulkan_context.memory_arena);
+
+        VkBufferCopy* mesh_buffer_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferCopy, transfer_operations);
+        u32 mesh_copy_count = 0;
+        u64 mesh_buffer_dst_offset = renderer.mesh_buffer_used;
+        b32 create_new_mesh_buffer_copy = true;
+
+        // TODO: How many VkBufferImageCopies should we actually get?
+        VkBufferImageCopy* texture_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferImageCopy, transfer_operations * 16);
+        u32 texture_copy_count = 0;
+
+        VkImageMemoryBarrier* texture_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkImageMemoryBarrier, transfer_operations);
+        u32 texture_barrier_count = 0;
+
+        for (u64 i = starting_index; i < transfer_operations; ++i)
+        {
+            Renderer_Transfer_Operation* operation = &renderer.transfer_queue.operations[i % array_count(renderer.transfer_queue.operations)];
+            if (operation->state == RENDERER_TRANSFER_OPERATION_STATE_QUEUED)
+            {
+                operation->state = RENDERER_TRANSFER_OPERATION_STATE_FINISHED;
+                atomic_decrement(&renderer.transfer_queue.operation_count);
+            }
+            else if (operation->state != RENDERER_TRANSFER_OPERATION_STATE_READY)
+            {
+                break;
+            }
+            else
+            {
+                u64 src_offset = renderer.transfer_queue.dequeue_location;
+                u64 size = operation->size;
+                if (renderer.transfer_queue.dequeue_location + operation->size >= renderer.transfer_queue.transfer_memory_size)
+                {
+                    size = operation->size - renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.dequeue_location;
+                    src_offset = 0;
+                    create_new_mesh_buffer_copy = true;
+                }
+
+                switch (operation->type)
+                {
+                case RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER:
+                {
+                    if (create_new_mesh_buffer_copy)
+                    {
+                        if (mesh_copy_count > 0)
+                        {
+                            mesh_buffer_dst_offset += mesh_buffer_copies[mesh_copy_count - 1].size;
+                        }
+                        mesh_buffer_copies[mesh_copy_count].srcOffset = src_offset;
+                        mesh_buffer_copies[mesh_copy_count].dstOffset = mesh_buffer_dst_offset;
+                        mesh_buffer_copies[mesh_copy_count].size = 0;
+                        mesh_copy_count++;
+
+                        create_new_mesh_buffer_copy = false;
+                    }
+
+                    VkBufferCopy* buffer_copy = &mesh_buffer_copies[mesh_copy_count - 1];
+                    buffer_copy->size += size;
+
+                    // TODO: Reuse buffer slot. We also need to free the buffer at this slot if it was previously used.
+                    renderer.buffers[operation->buffer.id].offset = (u32)renderer.mesh_buffer_used;
+                    renderer.mesh_buffer_used += size;
+                } break;
+                case RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE:
+                {
+                    VkImageCreateInfo image_create_info = {};
+                    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+                    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+                    image_create_info.format = renderer.texture_2d_format;
+                    image_create_info.extent = {operation->texture.width, operation->texture.height, 1};
+                    image_create_info.mipLevels = most_significant_bit_index(max(operation->texture.width, operation->texture.height)) + 1;
+                    image_create_info.arrayLayers = 1;
+                    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+                    // TODO: Reuse texture slot. We also need to free the textures at this slot if it was previously used.
+                    // Also vulkan_memory_block_reserve_image just reserves image memory from where renderer.texture_memory_used is.
+                    // We need to allocate more smartly.
+                    Vulkan_Texture* texture = &renderer.textures[operation->texture.id];
+                    texture->image = vulkan_memory_block_reserve_image(&renderer.texture_memory_block, &image_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+                    VkImageViewCreateInfo image_view_create_info = {};
+                    image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                    image_view_create_info.image = texture->image;
+                    image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                    image_view_create_info.format = image_create_info.format;
+                    image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image_create_info.mipLevels, 0, image_create_info.arrayLayers};
+                    VK_CALL(vkCreateImageView(vulkan_context.device, &image_view_create_info, NULL, &texture->image_view));
+
+                    VkImageMemoryBarrier* image_barrier = &texture_barriers[texture_barrier_count++];
+                    *image_barrier = {};
+                    image_barrier->sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    image_barrier->srcAccessMask = 0;
+                    image_barrier->dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    image_barrier->oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    image_barrier->newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    image_barrier->srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    image_barrier->dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    image_barrier->image = texture->image;
+                    image_barrier->subresourceRange = image_view_create_info.subresourceRange;
+
+                    u32 width = image_create_info.extent.width;
+                    u32 height = image_create_info.extent.height;
+                    u64 buffer_offset = src_offset;
+
+                    for (u32 i = 0; i < image_create_info.mipLevels; ++i)
+                    {
+                        VkBufferImageCopy* buffer_image_copy_region = &texture_copies[texture_copy_count++];
+                        buffer_image_copy_region->imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, image_create_info.arrayLayers};
+                        buffer_image_copy_region->imageExtent = {width, height, 1};
+                        buffer_image_copy_region->bufferOffset = buffer_offset;
+
+                        // NOTE: This calculates size of a mip level for the BC7 format
+                        buffer_offset += max(1, (width + 3) / 4) * 16 * max(1, (height + 3) / 4);
+                        width = max(1, width >> 1);
+                        height = max(1, height >> 1);
+                    }
+
+                    renderer.texture_memory_used += buffer_offset - src_offset;
+                    create_new_mesh_buffer_copy = true;
+                } break;
+                }
+
+                operation->state = RENDERER_TRANSFER_OPERATION_STATE_QUEUED;
+
+                renderer.transfer_queue.dequeue_location = (renderer.transfer_queue.dequeue_location + operation->size) % renderer.transfer_queue.transfer_memory_size;
+                atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, -(s64)operation->size);
+            }
+        }
+
+        if (mesh_copy_count > 0 || texture_barrier_count > 0)
+        {
+            vkResetFences(vulkan_context.device, 1, &renderer.transfer_command_buffer_fence);
+            vkResetCommandPool(vulkan_context.device, renderer.transfer_command_pool, 0);
+
+            VkCommandBufferBeginInfo command_buffer_begin_info = {};
+            command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+            vkBeginCommandBuffer(renderer.transfer_command_buffer, &command_buffer_begin_info);
+
+            VkBufferMemoryBarrier* buffer_barriers = NULL;
+            if (mesh_copy_count > 0)
+            {
+                vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.mesh_buffer, mesh_copy_count, mesh_buffer_copies);
+
+                buffer_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferMemoryBarrier, mesh_copy_count);
+                for (u32 i = 0; i < mesh_copy_count; ++i)
+                {
+                    buffer_barriers[i] = {};
+                    buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    buffer_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    buffer_barriers[i].dstAccessMask = 0;
+                    buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
+                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    buffer_barriers[i].buffer = renderer.mesh_buffer;
+                    buffer_barriers[i].offset = mesh_buffer_copies[i].dstOffset;
+                    buffer_barriers[i].size = mesh_buffer_copies[i].size;
+                }
+            }
+            if (texture_barrier_count > 0)
+            {
+                vkCmdPipelineBarrier(renderer.transfer_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, texture_barrier_count, texture_barriers);
+
+                u32 texture_copy_index = 0;
+                for (u32 i = 0; i < texture_barrier_count; ++i)
+                {
+                    assert(texture_copy_index < texture_copy_count);
+
+                    vkCmdCopyBufferToImage(renderer.transfer_command_buffer, renderer.transfer_buffer, texture_barriers[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture_barriers[i].subresourceRange.levelCount, &texture_copies[texture_copy_index]);
+                    texture_copy_index += texture_barriers[i].subresourceRange.levelCount;
+
+                    texture_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    texture_barriers[i].dstAccessMask = 0;
+                    texture_barriers[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    texture_barriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    texture_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
+                    texture_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                }
+
+            }
+
+            vkCmdPipelineBarrier(renderer.transfer_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, mesh_copy_count, buffer_barriers, texture_barrier_count, texture_barriers);
+
+            vkEndCommandBuffer(renderer.transfer_command_buffer);
+
+            VkSubmitInfo submit_info = {};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &renderer.transfer_command_buffer;
+            vkQueueSubmit(vulkan_context.transfer_queue, 1, &submit_info, renderer.transfer_command_buffer_fence);
+        }
+
+        memory_arena_free_to_marker(vulkan_context.memory_arena, memory_arena_marker);
+    }
+}
 
 void renderer_begin_frame(Frame_Parameters* frame_params)
 {
@@ -815,19 +1090,22 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     memory_arena_reset(&renderer.current_render_frame->draw_command_arena);
 }
 
-void renderer_draw_buffer(Renderer_Resource_Handle buffer, u32 index_offset, u32 index_count)
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count)
 {
     assert(renderer.current_render_frame);
 
     u32 current_draw_call_count = *renderer.current_render_frame->draw_call_count;
     // TODO: Remove this? (assert should be caught by memory_arena_reserve). Think about whether MAX_DRAW_CALLS_PER_FRAME should be a thing.
     assert(current_draw_call_count <= MAX_DRAW_CALLS_PER_FRAME);
-
     *renderer.current_render_frame->draw_call_count = current_draw_call_count + 1;
+
+    // NOTE: The vertices and indices are in the same buffer.
+    // We must use UINT32 as the index type, which is the same size as a float, otherwise we wouldn't know where the first index is!
+    // We could separate the vertex and index buffer. Leaving it for now since we probably want to use UINT32 anyways.
     VkDrawIndexedIndirectCommand* draw_command = (VkDrawIndexedIndirectCommand*)memory_arena_reserve(&renderer.current_render_frame->draw_command_arena, sizeof(VkDrawIndexedIndirectCommand));
     draw_command->indexCount = index_count;
     draw_command->instanceCount = 1;
-    draw_command->vertexOffset = (s32)buffer.id;
+    draw_command->vertexOffset = renderer.buffers[buffer.id].offset;
     draw_command->firstIndex = (draw_command->vertexOffset + index_offset) / sizeof(u32) / sizeof(u32);
     draw_command->firstInstance = 0;
 }
@@ -849,76 +1127,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 {
     Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
 
-    // TODO: Replace with actual drawing management system
-    static b32 can_draw = false;
-    if (vkGetFenceStatus(vulkan_context.device, renderer.transfer_command_buffer_fence) == VK_SUCCESS && renderer.transfer_queue.operation_count > 0)
-    {
-        VkBufferCopy copy_regions[] = {{renderer.transfer_queue.dequeue_location, renderer.mesh_buffer_used, 0}, {}};
-        u32 region_count = 0;
-
-        u64 transfer_operations = renderer.transfer_queue.operation_count;
-        u64 starting_index = ((renderer.transfer_queue.operation_index - transfer_operations) % array_count(renderer.transfer_queue.operations) + array_count(renderer.transfer_queue.operations)) % array_count(renderer.transfer_queue.operations);
-
-        for (u64 i = starting_index; i < transfer_operations; ++i)
-        {
-            Renderer_Transfer_Operation* operation = &renderer.transfer_queue.operations[i % array_count(renderer.transfer_queue.operations)];
-            if (operation->state == RENDERER_TRANSFER_OPERATION_STATE_QUEUED)
-            {
-                operation->state = RENDERER_TRANSFER_OPERATION_STATE_FINISHED;
-                atomic_decrement(&renderer.transfer_queue.operation_count);
-                can_draw = true;
-            }
-            else if (operation->state != RENDERER_TRANSFER_OPERATION_STATE_READY)
-            {
-                break;
-            }
-            else
-            {
-                u64 size = operation->size;
-                if (renderer.transfer_queue.dequeue_location + operation->size >= renderer.transfer_queue.transfer_memory_size)
-                {
-                    size = operation->size - renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.dequeue_location;
-                    copy_regions[region_count].srcOffset = 0;
-                    copy_regions[region_count].dstOffset = copy_regions[0].dstOffset + copy_regions[0].size;
-                    region_count++;
-                }
-                if (region_count == 0)
-                {
-                    region_count++;
-                }
-
-                operation->handle->id = renderer.mesh_buffer_used;
-
-                renderer.mesh_buffer_used += size;
-                copy_regions[region_count - 1].size += size;
-                operation->state = RENDERER_TRANSFER_OPERATION_STATE_QUEUED;
-
-                renderer.transfer_queue.dequeue_location = (renderer.transfer_queue.dequeue_location + operation->size) % renderer.transfer_queue.transfer_memory_size;
-                atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, -(s64)operation->size);
-            }
-        }
-
-        if (region_count > 0)
-        {
-            vkResetFences(vulkan_context.device, 1, &renderer.transfer_command_buffer_fence);
-            vkResetCommandPool(vulkan_context.device, renderer.transfer_command_pool, 0);
-
-            // TODO: Do we need to transfer ownership of the buffer?
-            VkCommandBufferBeginInfo command_buffer_begin_info = {};
-            command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-            vkBeginCommandBuffer(renderer.transfer_command_buffer, &command_buffer_begin_info);
-            vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.mesh_buffer, region_count, copy_regions);
-            vkEndCommandBuffer(renderer.transfer_command_buffer);
-
-            VkSubmitInfo submit_info = {};
-            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submit_info.commandBufferCount = 1;
-            submit_info.pCommandBuffers = &renderer.transfer_command_buffer;
-            vkQueueSubmit(vulkan_context.transfer_queue, 1, &submit_info, renderer.transfer_command_buffer_fence);
-        }
-    }
+    resolve_pending_transfer_operations();
 
     wait_for_fences(&frame_resources->graphics_command_buffer_fence, 1);
     vkResetFences(vulkan_context.device, 1, &frame_resources->graphics_command_buffer_fence);
@@ -928,12 +1137,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     VkCommandBufferBeginInfo command_buffer_begin_info = {};
     command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-    if (vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info) != VK_SUCCESS)
-    {
-        // TODO: Logging
-        printf("Vulkan renderer failed to begin recording command buffer!\n");
-        return;
-    }
+    VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
 
     VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
     VkRenderPassBeginInfo render_pass_begin_info = {};
@@ -954,23 +1158,13 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
     vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
 
-    // TODO: Replace with actual drawing management system
-    if (can_draw)
-    {
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, 1, &renderer.mesh_buffer, &offset);
-        vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base + sizeof(u32)), renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base), MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
-    }
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, 1, &renderer.mesh_buffer, &offset);
+    vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base + sizeof(u32)), renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base), MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
 
     vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
-
-    if (vkEndCommandBuffer(frame_resources->graphics_command_buffer) != VK_SUCCESS)
-    {
-        // TODO: Logging
-        printf("Vulkan renderer failed to end recording command buffer!\n");
-        return;
-    }
+    VK_CALL(vkEndCommandBuffer(frame_resources->graphics_command_buffer));
 
     // TODO: Check result and recreate swapchain/resources as necessary
     acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
@@ -984,13 +1178,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     submit_info.pCommandBuffers = &frame_resources->graphics_command_buffer;
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &frame_resources->render_finished_semaphore;
-
-    if (vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, frame_resources->graphics_command_buffer_fence) != VK_SUCCESS)
-    {
-        // TODO: Logging
-        printf("Failed to submit Vulkan command buffer!\n");
-        return;
-    }
+    VK_CALL(vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, frame_resources->graphics_command_buffer_fence));
 
     VkPresentInfoKHR present_info = {};
     present_info.waitSemaphoreCount = 1;
@@ -1019,7 +1207,6 @@ void renderer_resize(u32 window_width, u32 window_height)
         return;
     }
 
-    recreate_swapchain(window_width, window_height);
-
     // TODO: Need to make sure command buffers are rerecorded!
+    recreate_swapchain(window_width, window_height);
 }

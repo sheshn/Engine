@@ -2,11 +2,18 @@
 
 #include "ツ.common.h"
 #include "ツ.math.h"
-#include "ツ.intrinsic.h"
 
-struct Renderer_Resource_Handle
+struct Renderer_Buffer
 {
-    u64 id;
+    u32 id;
+    u32 reserved;
+};
+
+struct Renderer_Texture
+{
+    u32 id;
+    u16 width;
+    u16 height;
 };
 
 struct Vertex
@@ -14,24 +21,13 @@ struct Vertex
     v4 position;
 };
 
-struct Sub_Mesh
-{
-    u32 index_offset;
-    u32 index_count;
-};
-
-struct Mesh
-{
-    Vertex* vertices;
-    u32     vertex_count;
-    u32*    indices;
-    u32     index_count;
-
-    Sub_Mesh* sub_meshes;
-    u32       sub_mesh_count;
-};
-
 #define MAX_TRANSFER_OPERATIONS 256
+
+enum Renderer_Transfer_Operation_Type
+{
+    RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER,
+    RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE
+};
 
 enum Renderer_Transfer_Operation_State
 {
@@ -44,7 +40,13 @@ enum Renderer_Transfer_Operation_State
 struct Renderer_Transfer_Operation
 {
     Renderer_Transfer_Operation_State state;
-    Renderer_Resource_Handle*         handle;
+    Renderer_Transfer_Operation_Type  type;
+
+    union
+    {
+        Renderer_Buffer  buffer;
+        Renderer_Texture texture;
+    };
 
     u8* memory;
     u64 size; // NOTE: The size may be larger than what was requested
@@ -64,12 +66,16 @@ struct Renderer_Transfer_Queue
     volatile u64 transfer_memory_used;
 };
 
+// TODO: Consider removing 'renderer' prefix from all of these
+Renderer_Buffer  renderer_create_buffer_reference(u32 id);
+Renderer_Texture renderer_create_texture_reference(u32 id, u32 texture_type, u32 mipmap_count);
+
 void renderer_init_transfer_queue(Renderer_Transfer_Queue* queue, u8* memory, u64 memory_size);
-Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, u64 transfer_size);
+Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type, u64 transfer_size);
 void renderer_queue_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation* operation);
 
 void renderer_begin_frame(Frame_Parameters* frame_params);
-void renderer_draw_buffer(Renderer_Resource_Handle buffer, u32 index_offset, u32 index_count);
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count);
 void renderer_end_frame();
 
 void renderer_submit_frame(Frame_Parameters* frame_params);

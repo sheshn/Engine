@@ -10,6 +10,10 @@
 
 #define array_count(array) (sizeof((array))/sizeof((array)[0]))
 
+#define kilobytes(value) ((value) * 1024)
+#define megabytes(value) (kilobytes((value)) * 1024)
+#define gigabytes(value) (megabytes((value)) * 1024)
+
 struct Frame_Parameters
 {
     Frame_Parameters* next;

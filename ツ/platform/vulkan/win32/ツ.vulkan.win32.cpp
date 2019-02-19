@@ -58,7 +58,7 @@ b32 win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
     surface_create_info.hinstance = GetModuleHandle(NULL);
     assert(vkCreateWin32SurfaceKHR(vulkan_instance, &surface_create_info, NULL, &vulkan_surface) == VK_SUCCESS);
 
-    u64 memory_size = 64 * 1024 * 1024;
+    u64 memory_size = megabytes(64);
     vulkan_arena = {allocate_memory(memory_size), memory_size, 0};
 
     init_vulkan_renderer(vulkan_instance, vulkan_surface, window_width, window_height, &vulkan_arena);

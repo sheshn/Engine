@@ -15,3 +15,25 @@
     #define atomic_decrement(dest) __sync_sub_and_fetch((dest), 1)
     #define atomic_add(dest, value) __sync_add_and_fetch((dest), (value))
 #endif
+
+internal u32 most_significant_bit_index(u32 value)
+{
+    u32 index = 0;
+#if defined(_MSC_VER)
+    _BitScanReverse((DWORD*)&index, value);
+#elif defined(__clang__)
+    index = 31 - __builtin_clz(value);
+#endif
+    return index;
+}
+
+internal u32 least_significant_bit_index(u32 value)
+{
+    u32 index = 0;
+#if defined(_MSC_VER)
+    _BitScanForward((DWORD*)&index, value);
+#elif defined(__clang__)
+    index = __builtin_ctz(value);
+#endif
+    return index;
+}

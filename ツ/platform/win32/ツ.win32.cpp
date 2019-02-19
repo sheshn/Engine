@@ -11,6 +11,7 @@
 #include "../../ツ.renderer.cpp"
 #include "../vulkan/win32/ツ.vulkan.win32.cpp"
 #include "../vulkan/ツ.vulkan.cpp"
+#include "../../ツ.asset.cpp"
 
 #define MAX_FRAMES 16
 
@@ -117,9 +118,9 @@ JOB_ENTRY_POINT(render_entry_point)
     }
 
     // TODO: Remove this test code
-    Renderer_Resource_Handle handle = {0};
+    Renderer_Buffer buffer = renderer_create_buffer_reference(0);
     renderer_begin_frame(frame_params);
-    renderer_draw_buffer(handle, 64 * 4, 6);
+    renderer_draw_buffer(buffer, 64 * 4, 6);
     renderer_end_frame();
     // printf("RENDER %lld\n", frame_params->frame_number);
 }
@@ -147,7 +148,7 @@ JOB_ENTRY_POINT(gpu_entry_point)
 
 int main()
 {
-    u64 memory_size = 1 * 1024 * 1024 * 1024;
+    u64 memory_size = gigabytes(1);
     u8* platform_memory = allocate_memory(memory_size);
 
     Memory_Arena platform_arena = {platform_memory, memory_size, 0};

@@ -1202,6 +1202,9 @@ VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipelineLayout)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipeline)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkCommandPool)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSampler)
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSetLayout)
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorPool)
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSet)
 typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void );
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddr)(VkInstance instance, const char*pName);
 typedef VkFlags VkDebugUtilsMessengerCreateFlagsEXT;
@@ -1277,9 +1280,163 @@ struct VkDeviceCreateInfo
 typedef VkResult (VKAPI_PTR *PFN_vkCreateDevice)(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkDevice *pDevice);
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetDeviceProcAddr)(VkDevice device, const char*pName);
 typedef void (VKAPI_PTR *PFN_vkGetDeviceQueue)(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue *pQueue);
-typedef VkFlags VkPipelineLayoutCreateFlags;
-VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSetLayout)
+typedef VkFlags VkSamplerCreateFlags;
+enum VkFilter
+{
+	VK_FILTER_NEAREST = 0,
+	VK_FILTER_LINEAR = 1,
+	VK_FILTER_CUBIC_IMG = 1000015000,
+	VK_FILTER_BEGIN_RANGE = VK_FILTER_NEAREST,
+	VK_FILTER_END_RANGE = VK_FILTER_LINEAR,
+	VK_FILTER_RANGE_SIZE = (VK_FILTER_LINEAR-VK_FILTER_NEAREST+1),
+	VK_FILTER_MAX_ENUM = 0x7FFFFFFF
+};
+enum VkSamplerMipmapMode
+{
+	VK_SAMPLER_MIPMAP_MODE_NEAREST = 0,
+	VK_SAMPLER_MIPMAP_MODE_LINEAR = 1,
+	VK_SAMPLER_MIPMAP_MODE_BEGIN_RANGE = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+	VK_SAMPLER_MIPMAP_MODE_END_RANGE = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+	VK_SAMPLER_MIPMAP_MODE_RANGE_SIZE = (VK_SAMPLER_MIPMAP_MODE_LINEAR-VK_SAMPLER_MIPMAP_MODE_NEAREST+1),
+	VK_SAMPLER_MIPMAP_MODE_MAX_ENUM = 0x7FFFFFFF
+};
+enum VkSamplerAddressMode
+{
+	VK_SAMPLER_ADDRESS_MODE_REPEAT = 0,
+	VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT = 1,
+	VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2,
+	VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER = 3,
+	VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE = 4,
+	VK_SAMPLER_ADDRESS_MODE_BEGIN_RANGE = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+	VK_SAMPLER_ADDRESS_MODE_END_RANGE = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+	VK_SAMPLER_ADDRESS_MODE_RANGE_SIZE = (VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER-VK_SAMPLER_ADDRESS_MODE_REPEAT+1),
+	VK_SAMPLER_ADDRESS_MODE_MAX_ENUM = 0x7FFFFFFF
+};
+enum VkCompareOp
+{
+	VK_COMPARE_OP_NEVER = 0,
+	VK_COMPARE_OP_LESS = 1,
+	VK_COMPARE_OP_EQUAL = 2,
+	VK_COMPARE_OP_LESS_OR_EQUAL = 3,
+	VK_COMPARE_OP_GREATER = 4,
+	VK_COMPARE_OP_NOT_EQUAL = 5,
+	VK_COMPARE_OP_GREATER_OR_EQUAL = 6,
+	VK_COMPARE_OP_ALWAYS = 7,
+	VK_COMPARE_OP_BEGIN_RANGE = VK_COMPARE_OP_NEVER,
+	VK_COMPARE_OP_END_RANGE = VK_COMPARE_OP_ALWAYS,
+	VK_COMPARE_OP_RANGE_SIZE = (VK_COMPARE_OP_ALWAYS-VK_COMPARE_OP_NEVER+1),
+	VK_COMPARE_OP_MAX_ENUM = 0x7FFFFFFF
+};
+enum VkBorderColor
+{
+	VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK = 0,
+	VK_BORDER_COLOR_INT_TRANSPARENT_BLACK = 1,
+	VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK = 2,
+	VK_BORDER_COLOR_INT_OPAQUE_BLACK = 3,
+	VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE = 4,
+	VK_BORDER_COLOR_INT_OPAQUE_WHITE = 5,
+	VK_BORDER_COLOR_BEGIN_RANGE = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+	VK_BORDER_COLOR_END_RANGE = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+	VK_BORDER_COLOR_RANGE_SIZE = (VK_BORDER_COLOR_INT_OPAQUE_WHITE-VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK+1),
+	VK_BORDER_COLOR_MAX_ENUM = 0x7FFFFFFF
+};
+struct VkSamplerCreateInfo
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkSamplerCreateFlags flags;
+	VkFilter magFilter;
+	VkFilter minFilter;
+	VkSamplerMipmapMode mipmapMode;
+	VkSamplerAddressMode addressModeU;
+	VkSamplerAddressMode addressModeV;
+	VkSamplerAddressMode addressModeW;
+	float mipLodBias;
+	VkBool32 anisotropyEnable;
+	float maxAnisotropy;
+	VkBool32 compareEnable;
+	VkCompareOp compareOp;
+	float minLod;
+	float maxLod;
+	VkBorderColor borderColor;
+	VkBool32 unnormalizedCoordinates;
+};
+typedef VkResult (VKAPI_PTR *PFN_vkCreateSampler)(VkDevice device, const VkSamplerCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkSampler *pSampler);
+enum VkDescriptorType
+{
+	VK_DESCRIPTOR_TYPE_SAMPLER = 0,
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1,
+	VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 2,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE = 3,
+	VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER = 4,
+	VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER = 5,
+	VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6,
+	VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
+	VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC = 8,
+	VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC = 9,
+	VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT = 10,
+	VK_DESCRIPTOR_TYPE_BEGIN_RANGE = VK_DESCRIPTOR_TYPE_SAMPLER,
+	VK_DESCRIPTOR_TYPE_END_RANGE = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+	VK_DESCRIPTOR_TYPE_RANGE_SIZE = (VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT-VK_DESCRIPTOR_TYPE_SAMPLER+1),
+	VK_DESCRIPTOR_TYPE_MAX_ENUM = 0x7FFFFFFF
+};
 typedef VkFlags VkShaderStageFlags;
+struct VkDescriptorSetLayoutBinding
+{
+	uint32_t binding;
+	VkDescriptorType descriptorType;
+	uint32_t descriptorCount;
+	VkShaderStageFlags stageFlags;
+	const VkSampler*pImmutableSamplers;
+};
+enum VkShaderStageFlagBits
+{
+	VK_SHADER_STAGE_VERTEX_BIT = 0x00000001,
+	VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT = 0x00000002,
+	VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT = 0x00000004,
+	VK_SHADER_STAGE_GEOMETRY_BIT = 0x00000008,
+	VK_SHADER_STAGE_FRAGMENT_BIT = 0x00000010,
+	VK_SHADER_STAGE_COMPUTE_BIT = 0x00000020,
+	VK_SHADER_STAGE_ALL_GRAPHICS = 0x0000001F,
+	VK_SHADER_STAGE_ALL = 0x7FFFFFFF,
+	VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+};
+typedef VkFlags VkDescriptorSetLayoutCreateFlags;
+struct VkDescriptorSetLayoutCreateInfo
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorSetLayoutCreateFlags flags;
+	uint32_t bindingCount;
+	const VkDescriptorSetLayoutBinding*pBindings;
+};
+typedef VkResult (VKAPI_PTR *PFN_vkCreateDescriptorSetLayout)(VkDevice device, const VkDescriptorSetLayoutCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkDescriptorSetLayout *pSetLayout);
+struct VkDescriptorPoolSize
+{
+	VkDescriptorType type;
+	uint32_t descriptorCount;
+};
+typedef VkFlags VkDescriptorPoolCreateFlags;
+struct VkDescriptorPoolCreateInfo
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorPoolCreateFlags flags;
+	uint32_t maxSets;
+	uint32_t poolSizeCount;
+	const VkDescriptorPoolSize*pPoolSizes;
+};
+typedef VkResult (VKAPI_PTR *PFN_vkCreateDescriptorPool)(VkDevice device, const VkDescriptorPoolCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkDescriptorPool *pDescriptorPool);
+struct VkDescriptorSetAllocateInfo
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorPool descriptorPool;
+	uint32_t descriptorSetCount;
+	const VkDescriptorSetLayout*pSetLayouts;
+};
+typedef VkResult (VKAPI_PTR *PFN_vkAllocateDescriptorSets)(VkDevice device, const VkDescriptorSetAllocateInfo*pAllocateInfo, VkDescriptorSet *pDescriptorSets);
+typedef VkFlags VkPipelineLayoutCreateFlags;
 struct VkPushConstantRange
 {
 	VkShaderStageFlags stageFlags;
@@ -1618,18 +1775,6 @@ struct VkShaderModuleCreateInfo
 };
 typedef VkResult (VKAPI_PTR *PFN_vkCreateShaderModule)(VkDevice device, const VkShaderModuleCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkShaderModule *pShaderModule);
 typedef VkFlags VkPipelineShaderStageCreateFlags;
-enum VkShaderStageFlagBits
-{
-	VK_SHADER_STAGE_VERTEX_BIT = 0x00000001,
-	VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT = 0x00000002,
-	VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT = 0x00000004,
-	VK_SHADER_STAGE_GEOMETRY_BIT = 0x00000008,
-	VK_SHADER_STAGE_FRAGMENT_BIT = 0x00000010,
-	VK_SHADER_STAGE_COMPUTE_BIT = 0x00000020,
-	VK_SHADER_STAGE_ALL_GRAPHICS = 0x0000001F,
-	VK_SHADER_STAGE_ALL = 0x7FFFFFFF,
-	VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
-};
 struct VkSpecializationMapEntry
 {
 	uint32_t constantID;
@@ -1663,21 +1808,6 @@ struct VkPipelineTessellationStateCreateInfo
 	uint32_t patchControlPoints;
 };
 typedef VkFlags VkPipelineDepthStencilStateCreateFlags;
-enum VkCompareOp
-{
-	VK_COMPARE_OP_NEVER = 0,
-	VK_COMPARE_OP_LESS = 1,
-	VK_COMPARE_OP_EQUAL = 2,
-	VK_COMPARE_OP_LESS_OR_EQUAL = 3,
-	VK_COMPARE_OP_GREATER = 4,
-	VK_COMPARE_OP_NOT_EQUAL = 5,
-	VK_COMPARE_OP_GREATER_OR_EQUAL = 6,
-	VK_COMPARE_OP_ALWAYS = 7,
-	VK_COMPARE_OP_BEGIN_RANGE = VK_COMPARE_OP_NEVER,
-	VK_COMPARE_OP_END_RANGE = VK_COMPARE_OP_ALWAYS,
-	VK_COMPARE_OP_RANGE_SIZE = (VK_COMPARE_OP_ALWAYS-VK_COMPARE_OP_NEVER+1),
-	VK_COMPARE_OP_MAX_ENUM = 0x7FFFFFFF
-};
 enum VkStencilOp
 {
 	VK_STENCIL_OP_KEEP = 0,
@@ -1770,73 +1900,6 @@ enum VkImageUsageFlagBits
 	VK_IMAGE_USAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
 };
 typedef void (VKAPI_PTR *PFN_vkDestroyImage)(VkDevice device, VkImage image, const VkAllocationCallbacks*pAllocator);
-typedef VkFlags VkSamplerCreateFlags;
-enum VkFilter
-{
-	VK_FILTER_NEAREST = 0,
-	VK_FILTER_LINEAR = 1,
-	VK_FILTER_CUBIC_IMG = 1000015000,
-	VK_FILTER_BEGIN_RANGE = VK_FILTER_NEAREST,
-	VK_FILTER_END_RANGE = VK_FILTER_LINEAR,
-	VK_FILTER_RANGE_SIZE = (VK_FILTER_LINEAR-VK_FILTER_NEAREST+1),
-	VK_FILTER_MAX_ENUM = 0x7FFFFFFF
-};
-enum VkSamplerMipmapMode
-{
-	VK_SAMPLER_MIPMAP_MODE_NEAREST = 0,
-	VK_SAMPLER_MIPMAP_MODE_LINEAR = 1,
-	VK_SAMPLER_MIPMAP_MODE_BEGIN_RANGE = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-	VK_SAMPLER_MIPMAP_MODE_END_RANGE = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-	VK_SAMPLER_MIPMAP_MODE_RANGE_SIZE = (VK_SAMPLER_MIPMAP_MODE_LINEAR-VK_SAMPLER_MIPMAP_MODE_NEAREST+1),
-	VK_SAMPLER_MIPMAP_MODE_MAX_ENUM = 0x7FFFFFFF
-};
-enum VkSamplerAddressMode
-{
-	VK_SAMPLER_ADDRESS_MODE_REPEAT = 0,
-	VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT = 1,
-	VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2,
-	VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER = 3,
-	VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE = 4,
-	VK_SAMPLER_ADDRESS_MODE_BEGIN_RANGE = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-	VK_SAMPLER_ADDRESS_MODE_END_RANGE = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-	VK_SAMPLER_ADDRESS_MODE_RANGE_SIZE = (VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER-VK_SAMPLER_ADDRESS_MODE_REPEAT+1),
-	VK_SAMPLER_ADDRESS_MODE_MAX_ENUM = 0x7FFFFFFF
-};
-enum VkBorderColor
-{
-	VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK = 0,
-	VK_BORDER_COLOR_INT_TRANSPARENT_BLACK = 1,
-	VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK = 2,
-	VK_BORDER_COLOR_INT_OPAQUE_BLACK = 3,
-	VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE = 4,
-	VK_BORDER_COLOR_INT_OPAQUE_WHITE = 5,
-	VK_BORDER_COLOR_BEGIN_RANGE = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-	VK_BORDER_COLOR_END_RANGE = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
-	VK_BORDER_COLOR_RANGE_SIZE = (VK_BORDER_COLOR_INT_OPAQUE_WHITE-VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK+1),
-	VK_BORDER_COLOR_MAX_ENUM = 0x7FFFFFFF
-};
-struct VkSamplerCreateInfo
-{
-	VkStructureType sType;
-	const void*pNext;
-	VkSamplerCreateFlags flags;
-	VkFilter magFilter;
-	VkFilter minFilter;
-	VkSamplerMipmapMode mipmapMode;
-	VkSamplerAddressMode addressModeU;
-	VkSamplerAddressMode addressModeV;
-	VkSamplerAddressMode addressModeW;
-	float mipLodBias;
-	VkBool32 anisotropyEnable;
-	float maxAnisotropy;
-	VkBool32 compareEnable;
-	VkCompareOp compareOp;
-	float minLod;
-	float maxLod;
-	VkBorderColor borderColor;
-	VkBool32 unnormalizedCoordinates;
-};
-typedef VkResult (VKAPI_PTR *PFN_vkCreateSampler)(VkDevice device, const VkSamplerCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkSampler *pSampler);
 typedef VkFlags VkCommandPoolCreateFlags;
 struct VkCommandPoolCreateInfo
 {
@@ -2195,15 +2258,6 @@ typedef void (VKAPI_PTR *PFN_vkDestroyFramebuffer)(VkDevice device, VkFramebuffe
 typedef VkResult (VKAPI_PTR *PFN_vkCreateFramebuffer)(VkDevice device, const VkFramebufferCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkFramebuffer *pFramebuffer);
 typedef VkResult (VKAPI_PTR *PFN_vkAcquireNextImageKHR)(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t *pImageIndex);
 typedef VkResult (VKAPI_PTR *PFN_vkWaitForFences)(VkDevice device, uint32_t fenceCount, const VkFence*pFences, VkBool32 waitAll, uint64_t timeout);
-struct VkMappedMemoryRange
-{
-	VkStructureType sType;
-	const void*pNext;
-	VkDeviceMemory memory;
-	VkDeviceSize offset;
-	VkDeviceSize size;
-};
-typedef VkResult (VKAPI_PTR *PFN_vkFlushMappedMemoryRanges)(VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange*pMemoryRanges);
 typedef VkResult (VKAPI_PTR *PFN_vkGetFenceStatus)(VkDevice device, VkFence fence);
 struct VkBufferCopy
 {
@@ -2211,6 +2265,42 @@ struct VkBufferCopy
 	VkDeviceSize dstOffset;
 	VkDeviceSize size;
 };
+struct VkImageSubresourceLayers
+{
+	VkImageAspectFlags aspectMask;
+	uint32_t mipLevel;
+	uint32_t baseArrayLayer;
+	uint32_t layerCount;
+};
+struct VkOffset3D
+{
+	int32_t x;
+	int32_t y;
+	int32_t z;
+};
+struct VkBufferImageCopy
+{
+	VkDeviceSize bufferOffset;
+	uint32_t bufferRowLength;
+	uint32_t bufferImageHeight;
+	VkImageSubresourceLayers imageSubresource;
+	VkOffset3D imageOffset;
+	VkExtent3D imageExtent;
+};
+struct VkImageMemoryBarrier
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkAccessFlags srcAccessMask;
+	VkAccessFlags dstAccessMask;
+	VkImageLayout oldLayout;
+	VkImageLayout newLayout;
+	uint32_t srcQueueFamilyIndex;
+	uint32_t dstQueueFamilyIndex;
+	VkImage image;
+	VkImageSubresourceRange subresourceRange;
+};
+#define VK_QUEUE_FAMILY_IGNORED (~0U)
 typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence*pFences);
 typedef VkFlags VkCommandPoolResetFlags;
 typedef VkResult (VKAPI_PTR *PFN_vkResetCommandPool)(VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags);
@@ -2243,7 +2333,28 @@ enum VkCommandBufferUsageFlagBits
 	VK_COMMAND_BUFFER_USAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
 };
 typedef VkResult (VKAPI_PTR *PFN_vkBeginCommandBuffer)(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo*pBeginInfo);
+struct VkBufferMemoryBarrier
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkAccessFlags srcAccessMask;
+	VkAccessFlags dstAccessMask;
+	uint32_t srcQueueFamilyIndex;
+	uint32_t dstQueueFamilyIndex;
+	VkBuffer buffer;
+	VkDeviceSize offset;
+	VkDeviceSize size;
+};
 typedef void (VKAPI_PTR *PFN_vkCmdCopyBuffer)(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy*pRegions);
+struct VkMemoryBarrier
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkAccessFlags srcAccessMask;
+	VkAccessFlags dstAccessMask;
+};
+typedef void (VKAPI_PTR *PFN_vkCmdPipelineBarrier)(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, uint32_t memoryBarrierCount, const VkMemoryBarrier*pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier*pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier*pImageMemoryBarriers);
+typedef void (VKAPI_PTR *PFN_vkCmdCopyBufferToImage)(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy*pRegions);
 typedef VkResult (VKAPI_PTR *PFN_vkEndCommandBuffer)(VkCommandBuffer commandBuffer);
 struct VkSubmitInfo
 {
@@ -2258,6 +2369,15 @@ struct VkSubmitInfo
 	const VkSemaphore*pSignalSemaphores;
 };
 typedef VkResult (VKAPI_PTR *PFN_vkQueueSubmit)(VkQueue queue, uint32_t submitCount, const VkSubmitInfo*pSubmits, VkFence fence);
+struct VkMappedMemoryRange
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDeviceMemory memory;
+	VkDeviceSize offset;
+	VkDeviceSize size;
+};
+typedef VkResult (VKAPI_PTR *PFN_vkFlushMappedMemoryRanges)(VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange*pMemoryRanges);
 union VkClearColorValue
 {
 	float float32[4];
@@ -2360,12 +2480,15 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkGetImageMemoryRequirements) \
 		VK_FUNCTION(vkBindImageMemory) \
 		VK_FUNCTION(vkGetDeviceQueue) \
+		VK_FUNCTION(vkCreateSampler) \
+		VK_FUNCTION(vkCreateDescriptorSetLayout) \
+		VK_FUNCTION(vkCreateDescriptorPool) \
+		VK_FUNCTION(vkAllocateDescriptorSets) \
 		VK_FUNCTION(vkCreatePipelineLayout) \
 		VK_FUNCTION(vkCreateShaderModule) \
 		VK_FUNCTION(vkCreateGraphicsPipelines) \
 		VK_FUNCTION(vkDestroyShaderModule) \
 		VK_FUNCTION(vkDestroyImage) \
-		VK_FUNCTION(vkCreateSampler) \
 		VK_FUNCTION(vkCreateCommandPool) \
 		VK_FUNCTION(vkCreateFence) \
 		VK_FUNCTION(vkAllocateCommandBuffers) \
@@ -2381,14 +2504,16 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkCreateFramebuffer) \
 		VK_FUNCTION(vkAcquireNextImageKHR) \
 		VK_FUNCTION(vkWaitForFences) \
-		VK_FUNCTION(vkFlushMappedMemoryRanges) \
 		VK_FUNCTION(vkGetFenceStatus) \
 		VK_FUNCTION(vkResetFences) \
 		VK_FUNCTION(vkResetCommandPool) \
 		VK_FUNCTION(vkBeginCommandBuffer) \
 		VK_FUNCTION(vkCmdCopyBuffer) \
+		VK_FUNCTION(vkCmdPipelineBarrier) \
+		VK_FUNCTION(vkCmdCopyBufferToImage) \
 		VK_FUNCTION(vkEndCommandBuffer) \
 		VK_FUNCTION(vkQueueSubmit) \
+		VK_FUNCTION(vkFlushMappedMemoryRanges) \
 		VK_FUNCTION(vkCmdBeginRenderPass) \
 		VK_FUNCTION(vkCmdBindPipeline) \
 		VK_FUNCTION(vkCmdSetViewport) \
