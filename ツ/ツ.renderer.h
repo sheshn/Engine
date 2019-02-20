@@ -68,7 +68,7 @@ struct Renderer_Transfer_Queue
 
 // TODO: Consider removing 'renderer' prefix from all of these
 Renderer_Buffer  renderer_create_buffer_reference(u32 id);
-Renderer_Texture renderer_create_texture_reference(u32 id, u32 texture_type, u32 mipmap_count);
+Renderer_Texture renderer_create_texture_reference(u32 id, u32 width, u32 height);
 
 void renderer_init_transfer_queue(Renderer_Transfer_Queue* queue, u8* memory, u64 memory_size);
 Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type, u64 transfer_size);

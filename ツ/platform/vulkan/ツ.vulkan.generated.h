@@ -16,6 +16,7 @@
     (((major) << 22) | ((minor) << 12) | (patch))
 #define VK_KHR_SURFACE_EXTENSION_NAME "VK_KHR_surface"
 #define VK_EXT_DEBUG_UTILS_EXTENSION_NAME "VK_EXT_debug_utils"
+#define VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME "VK_KHR_get_physical_device_properties2"
 enum VkResult
 {
 	VK_SUCCESS = 0,
@@ -1259,8 +1260,39 @@ struct VkDeviceQueueCreateInfo
 	const float*pQueuePriorities;
 };
 typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceProperties)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties *pProperties);
-typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceFeatures)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures *pFeatures);
 typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceMemoryProperties)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties *pMemoryProperties);
+struct VkPhysicalDeviceDescriptorIndexingFeaturesEXT
+{
+	VkStructureType sType;
+	void *pNext;
+	VkBool32 shaderInputAttachmentArrayDynamicIndexing;
+	VkBool32 shaderUniformTexelBufferArrayDynamicIndexing;
+	VkBool32 shaderStorageTexelBufferArrayDynamicIndexing;
+	VkBool32 shaderUniformBufferArrayNonUniformIndexing;
+	VkBool32 shaderSampledImageArrayNonUniformIndexing;
+	VkBool32 shaderStorageBufferArrayNonUniformIndexing;
+	VkBool32 shaderStorageImageArrayNonUniformIndexing;
+	VkBool32 shaderInputAttachmentArrayNonUniformIndexing;
+	VkBool32 shaderUniformTexelBufferArrayNonUniformIndexing;
+	VkBool32 shaderStorageTexelBufferArrayNonUniformIndexing;
+	VkBool32 descriptorBindingUniformBufferUpdateAfterBind;
+	VkBool32 descriptorBindingSampledImageUpdateAfterBind;
+	VkBool32 descriptorBindingStorageImageUpdateAfterBind;
+	VkBool32 descriptorBindingStorageBufferUpdateAfterBind;
+	VkBool32 descriptorBindingUniformTexelBufferUpdateAfterBind;
+	VkBool32 descriptorBindingStorageTexelBufferUpdateAfterBind;
+	VkBool32 descriptorBindingUpdateUnusedWhilePending;
+	VkBool32 descriptorBindingPartiallyBound;
+	VkBool32 descriptorBindingVariableDescriptorCount;
+	VkBool32 runtimeDescriptorArray;
+};
+struct VkPhysicalDeviceFeatures2
+{
+	VkStructureType sType;
+	void *pNext;
+	VkPhysicalDeviceFeatures features;
+};
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceFeatures2KHR)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2 *pFeatures);
 typedef VkFlags VkDeviceCreateFlags;
 struct VkDeviceCreateInfo
 {
@@ -1400,6 +1432,22 @@ enum VkShaderStageFlagBits
 	VK_SHADER_STAGE_ALL_GRAPHICS = 0x0000001F,
 	VK_SHADER_STAGE_ALL = 0x7FFFFFFF,
 	VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
+};
+typedef VkFlags VkDescriptorBindingFlagsEXT;
+enum VkDescriptorBindingFlagBitsEXT
+{
+	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT = 0x00000001,
+	VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT = 0x00000002,
+	VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT = 0x00000004,
+	VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT = 0x00000008,
+	VK_DESCRIPTOR_BINDING_FLAG_BITS_MAX_ENUM_EXT = 0x7FFFFFFF
+};
+struct VkDescriptorSetLayoutBindingFlagsCreateInfoEXT
+{
+	VkStructureType sType;
+	const void*pNext;
+	uint32_t bindingCount;
+	const VkDescriptorBindingFlagsEXT*pBindingFlags;
 };
 typedef VkFlags VkDescriptorSetLayoutCreateFlags;
 struct VkDescriptorSetLayoutCreateInfo
@@ -2501,8 +2549,8 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkGetPhysicalDeviceQueueFamilyProperties) \
 		VK_FUNCTION(vkGetPhysicalDeviceSurfaceSupportKHR) \
 		VK_FUNCTION(vkGetPhysicalDeviceProperties) \
-		VK_FUNCTION(vkGetPhysicalDeviceFeatures) \
 		VK_FUNCTION(vkGetPhysicalDeviceMemoryProperties) \
+		VK_FUNCTION(vkGetPhysicalDeviceFeatures2KHR) \
 		VK_FUNCTION(vkCreateDevice) \
 		VK_FUNCTION(vkGetDeviceProcAddr) \
 		VK_FUNCTION(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \

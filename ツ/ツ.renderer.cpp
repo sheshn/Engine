@@ -22,7 +22,7 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* 
     Renderer_Transfer_Operation* operation = NULL;
     if (queue->operation_count < array_count(queue->operations) && queue->transfer_memory_used + transfer_size <= queue->transfer_memory_size)
     {
-        // TODO: Proper alignment!
+        // TODO: Proper alignment! May need to move to Vulkan side
         u64 size = transfer_size;
         if (queue->enqueue_location + transfer_size >= queue->transfer_memory_size)
         {

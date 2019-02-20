@@ -121,11 +121,15 @@ internal VkBuffer vulkan_memory_block_reserve_buffer(Vulkan_Memory_Block* memory
     VkMemoryRequirements memory_requirements;
     vkGetBufferMemoryRequirements(vulkan_context.device, buffer, &memory_requirements);
 
-    // TODO: Take memory_requirements alignment into account
-    assert((memory_block->used + memory_requirements.size <= memory_block->size) && (memory_properties & memory_block->memory_type.propertyFlags) == memory_properties && (memory_requirements.memoryTypeBits & (1 << memory_block->memory_type_index)));
-    VK_CALL(vkBindBufferMemory(vulkan_context.device, buffer, memory_block->device_memory, memory_block->used));
+    // NOTE: We will generally only have one VkBuffer per allocation (memory_block).
+    // So there is no reason for doing this since it will use the entire buffer and the starting offset is 0.
+    u64 aligned_offset = memory_block->used + memory_requirements.alignment / 2;
+    aligned_offset -= aligned_offset % memory_requirements.alignment;
 
-    memory_block->used += memory_requirements.size;
+    assert((aligned_offset + memory_requirements.size <= memory_block->size) && (memory_properties & memory_block->memory_type.propertyFlags) == memory_properties && (memory_requirements.memoryTypeBits & (1 << memory_block->memory_type_index)));
+    VK_CALL(vkBindBufferMemory(vulkan_context.device, buffer, memory_block->device_memory, aligned_offset));
+
+    memory_block->used = aligned_offset + memory_requirements.size;
     return buffer;
 }
 
@@ -150,11 +154,14 @@ internal VkImage vulkan_memory_block_reserve_image(Vulkan_Memory_Block* memory_b
     VkMemoryRequirements memory_requirements;
     vkGetImageMemoryRequirements(vulkan_context.device, image, &memory_requirements);
 
-    // TODO: Take memory_requirements alignment into account
-    assert((memory_block->used + memory_requirements.size <= memory_block->size) && (memory_properties & memory_block->memory_type.propertyFlags) == memory_properties && (memory_requirements.memoryTypeBits & (1 << memory_block->memory_type_index)));
-    VK_CALL(vkBindImageMemory(vulkan_context.device, image, memory_block->device_memory, memory_block->used));
+    // TODO: Need to manage this when we have to free memory
+    u64 aligned_offset = memory_block->used + memory_requirements.alignment / 2;
+    aligned_offset -= aligned_offset % memory_requirements.alignment;
 
-    memory_block->used += memory_requirements.size;
+    assert((aligned_offset + memory_requirements.size <= memory_block->size) && (memory_properties & memory_block->memory_type.propertyFlags) == memory_properties && (memory_requirements.memoryTypeBits & (1 << memory_block->memory_type_index)));
+    VK_CALL(vkBindImageMemory(vulkan_context.device, image, memory_block->device_memory, aligned_offset));
+
+    memory_block->used = aligned_offset + memory_requirements.size;
     return image;
 }
 
@@ -186,6 +193,7 @@ struct Frame_Resources
 {
     VkCommandBuffer graphics_command_buffer;
     VkFence         graphics_command_buffer_fence;
+    b32             should_record_command_buffer;
 
     VkSemaphore image_available_semaphore;
     VkSemaphore render_finished_semaphore;
@@ -349,17 +357,33 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     }
 
     vkGetPhysicalDeviceProperties(vulkan_context.physical_device, &vulkan_context.physical_device_properties);
-    vkGetPhysicalDeviceFeatures(vulkan_context.physical_device, &vulkan_context.physical_device_features);
     vkGetPhysicalDeviceMemoryProperties(vulkan_context.physical_device, &vulkan_context.physical_device_memory_properties);
+
+    VkPhysicalDeviceDescriptorIndexingFeaturesEXT physical_device_descriptor_indexing_features = {};
+    physical_device_descriptor_indexing_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
+
+    VkPhysicalDeviceFeatures2 physical_device_features2 = {};
+    physical_device_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    physical_device_features2.pNext = &physical_device_descriptor_indexing_features;
+    vkGetPhysicalDeviceFeatures2KHR(vulkan_context.physical_device, &physical_device_features2);
+
+    #if !defined(DEBUG)
+        // NOTE: Vulkan spec says this is bounds checking and there may be a performance penalty for enabling this feature.
+        // Only enable it in debug mode.
+        physical_device_features2.features.robustBufferAccess = false;
+    #endif
+
+    // TODO: Assert that we have all the features we need
+    vulkan_context.physical_device_features = physical_device_features2.features;
 
     VkDeviceCreateInfo device_create_info = {};
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_create_info.pNext = &physical_device_features2;
     device_create_info.queueCreateInfoCount = queue_info_count;
     device_create_info.pQueueCreateInfos = &queue_create_infos[0];
-    device_create_info.pEnabledFeatures = &vulkan_context.physical_device_features;
 
     char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME};
-    device_create_info.enabledExtensionCount = sizeof(device_extensions) / sizeof(device_extensions[0]);
+    device_create_info.enabledExtensionCount = array_count(device_extensions);
     device_create_info.ppEnabledExtensionNames = &device_extensions[0];
 
     VK_CALL(vkCreateDevice(vulkan_context.physical_device, &device_create_info, NULL, &vulkan_context.device));
@@ -398,7 +422,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     sampler_layout_binding.pImmutableSamplers = &renderer.texture_2d_sampler;
 
-    // TODO: Validation layer is complaining if we use less than renderer.max_2d_textures. Fix that!
     VkDescriptorSetLayoutBinding texture_2d_layout_binding = {};
     texture_2d_layout_binding.binding = 1;
     texture_2d_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -406,8 +429,19 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     texture_2d_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutBinding layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding};
+
+    // NOTE: VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT allows binding the entire texture_2d array even if we don't use renderer.max_2d_textures
+    // Without this, the validation layer complains.
+    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT};
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
+    layout_binding_flags_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
+    layout_binding_flags_create_info.bindingCount = array_count(binding_flags);
+    layout_binding_flags_create_info.pBindingFlags = binding_flags;
+
     VkDescriptorSetLayoutCreateInfo layout_create_info = {};
     layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_create_info.pNext = &layout_binding_flags_create_info;
     layout_create_info.bindingCount = array_count(layout_bindings);
     layout_create_info.pBindings = layout_bindings;
     VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &layout_create_info, NULL, &renderer.descriptor_set_layout));
@@ -628,12 +662,14 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_command_buffer_fence));
         VK_CALL(vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].graphics_command_buffer));
 
+        renderer.frame_resources[i].should_record_command_buffer = true;
         renderer.frame_resources[i].draw_call_count = (u32*)(renderer.draw_memory_block.base + i * per_frame_draw_buffer_size);
         renderer.frame_resources[i].draw_command_arena = Memory_Arena{((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), per_frame_draw_buffer_size - sizeof(u32)};
     }
 
 
     // TODO: Remove this test code
+    Memory_Arena_Marker temp_marker = memory_arena_get_marker(vulkan_context.memory_arena);
     u8* texture_data;
     u64 texture_size = 0;
     assert(DEBUG_read_file("../data/image1.tsu", vulkan_context.memory_arena, &texture_size, &texture_data));
@@ -669,6 +705,18 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
+
+    // TODO: The validation layer will complain on the following example since transfer memory is not aligned to 16 (BC7 texel size).
+    // Renderer_Texture renderer_texture1 = renderer_create_texture_reference(1, 512, 512);
+    // op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, texture_size);
+    // if (op)
+    // {
+    //     op->texture = renderer_texture1;
+    //     memcpy(op->memory, texture_data, texture_size);
+    //     renderer_queue_transfer(&renderer.transfer_queue, op);
+    // }
+
+    memory_arena_free_to_marker(vulkan_context.memory_arena, temp_marker);
 }
 
 internal void recreate_swapchain(u32 width, u32 height)
@@ -1009,6 +1057,7 @@ internal void resolve_pending_transfer_operations()
                     for (u32 i = 0; i < image_create_info.mipLevels; ++i)
                     {
                         VkBufferImageCopy* buffer_image_copy_region = &texture_copies[texture_copy_count++];
+                        *buffer_image_copy_region = {};
                         buffer_image_copy_region->imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, image_create_info.arrayLayers};
                         buffer_image_copy_region->imageExtent = {width, height, 1};
                         buffer_image_copy_region->bufferOffset = buffer_offset;
@@ -1157,43 +1206,57 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     wait_for_fences(&frame_resources->graphics_command_buffer_fence, 1);
     vkResetFences(vulkan_context.device, 1, &frame_resources->graphics_command_buffer_fence);
 
-    // TODO: Only record command buffer when needed.
-    // Use prerecorded secondary command buffers?
-    VkCommandBufferBeginInfo command_buffer_begin_info = {};
-    command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-    VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
+    // TODO: Use prerecorded secondary command buffers?
+    if (frame_resources->should_record_command_buffer)
+    {
+        VkCommandBufferBeginInfo command_buffer_begin_info = {};
+        command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
 
-    VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
-    VkRenderPassBeginInfo render_pass_begin_info = {};
-    render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
-    render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[frame_params->frame_number % MAX_FRAME_RESOURCES];
-    render_pass_begin_info.renderArea.offset = {0, 0};
-    render_pass_begin_info.renderArea.extent = vulkan_context.swapchain_extent;
-    render_pass_begin_info.clearValueCount = 1;
-    render_pass_begin_info.pClearValues = &clear_color;
+        VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+        VkRenderPassBeginInfo render_pass_begin_info = {};
+        render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
+        render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[frame_params->frame_number % MAX_FRAME_RESOURCES];
+        render_pass_begin_info.renderArea.offset = {0, 0};
+        render_pass_begin_info.renderArea.extent = vulkan_context.swapchain_extent;
+        render_pass_begin_info.clearValueCount = 1;
+        render_pass_begin_info.pClearValues = &clear_color;
 
-    vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
-    vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, 1, &renderer.descriptor_set, 0, NULL);
+        vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
+        vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, 1, &renderer.descriptor_set, 0, NULL);
 
-    VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
-    vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
+        VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
+        vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
-    VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
-    vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
+        VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
+        vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
 
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, 1, &renderer.mesh_buffer, &offset);
-    vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base + sizeof(u32)), renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base), MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, 1, &renderer.mesh_buffer, &offset);
+        vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base + sizeof(u32)), renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base), MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
 
-    vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
-    VK_CALL(vkEndCommandBuffer(frame_resources->graphics_command_buffer));
+        vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
+        VK_CALL(vkEndCommandBuffer(frame_resources->graphics_command_buffer));
 
-    // TODO: Check result and recreate swapchain/resources as necessary
-    acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
+        frame_resources->should_record_command_buffer = false;
+    }
+
+    VkResult result = acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        // TODO: Recreate swapchain/resources
+        return;
+    }
+    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    {
+        // TODO: Logging
+        printf("Unable to acquire Vulkan swapchain image!\n");
+        return;
+    }
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {};
@@ -1213,15 +1276,17 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     present_info.pSwapchains = &vulkan_context.swapchain;
     present_info.pImageIndices = &frame_resources->swapchain_image_index;
 
-    VkResult result = vkQueuePresentKHR(vulkan_context.present_queue, &present_info);
+    result = vkQueuePresentKHR(vulkan_context.present_queue, &present_info);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
         // TODO: Recreate swapchain/resources
+        return;
     }
     else if (result != VK_SUCCESS)
     {
         // TODO: Logging
         printf("Unable to present Vulkan swapchain image!\n");
+        return;
     }
 }
 
@@ -1232,7 +1297,10 @@ void renderer_resize(u32 window_width, u32 window_height)
     {
         return;
     }
-
-    // TODO: Need to make sure command buffers are rerecorded!
     recreate_swapchain(window_width, window_height);
+
+    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
+    {
+        renderer.frame_resources[i].should_record_command_buffer = true;
+    }
 }

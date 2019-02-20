@@ -848,6 +848,7 @@ void add_needed_items(Tokenizer* tokenizer)
     add_macro(vulkan_define_macro_map["VK_MAKE_VERSION"]);
     add_macro(vulkan_define_macro_map["VK_KHR_SURFACE_EXTENSION_NAME"]);
     add_macro(vulkan_define_macro_map["VK_EXT_DEBUG_UTILS_EXTENSION_NAME"]);
+    add_macro(vulkan_define_macro_map["VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME"]);
     add_function(vulkan_function_map["PFN_vkCreateInstance"]);
 
     b32 parsing = true;

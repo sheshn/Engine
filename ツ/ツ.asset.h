@@ -2,6 +2,9 @@
 
 #include "ツ.renderer.h"
 
+// TODO: Don't store data (eg. Vertex* vertices)?
+// Read directly from asset file into GPU memory?
+
 struct Sub_Mesh
 {
     u32 index_offset;
