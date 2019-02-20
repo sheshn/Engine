@@ -520,14 +520,6 @@ struct VkDebugUtilsMessengerCallbackDataEXT
 	uint32_t objectCount;
 	VkDebugUtilsObjectNameInfoEXT *pObjects;
 };
-struct VkDrawIndexedIndirectCommand
-{
-	uint32_t indexCount;
-	uint32_t instanceCount;
-	uint32_t firstIndex;
-	int32_t vertexOffset;
-	uint32_t firstInstance;
-};
 VK_DEFINE_HANDLE(VkDevice)
 VK_DEFINE_HANDLE(VkPhysicalDevice)
 enum VkPhysicalDeviceType
@@ -1196,16 +1188,24 @@ struct VkImageCreateInfo
 typedef VkResult (VKAPI_PTR *PFN_vkCreateImage)(VkDevice device, const VkImageCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkImage *pImage);
 typedef void (VKAPI_PTR *PFN_vkGetImageMemoryRequirements)(VkDevice device, VkImage image, VkMemoryRequirements *pMemoryRequirements);
 typedef VkResult (VKAPI_PTR *PFN_vkBindImageMemory)(VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize memoryOffset);
+struct VkDrawIndexedIndirectCommand
+{
+	uint32_t indexCount;
+	uint32_t instanceCount;
+	uint32_t firstIndex;
+	int32_t vertexOffset;
+	uint32_t firstInstance;
+};
 VK_DEFINE_HANDLE(VkCommandBuffer)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkFence)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSemaphore)
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSet)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipelineLayout)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipeline)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkCommandPool)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSampler)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSetLayout)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorPool)
-VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSet)
 typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void );
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddr)(VkInstance instance, const char*pName);
 typedef VkFlags VkDebugUtilsMessengerCreateFlagsEXT;
@@ -1935,6 +1935,45 @@ enum VkBufferUsageFlagBits
 	VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT = 0x00000200,
 	VK_BUFFER_USAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
 };
+struct VkDescriptorBufferInfo
+{
+	VkBuffer buffer;
+	VkDeviceSize offset;
+	VkDeviceSize range;
+};
+struct VkDescriptorImageInfo
+{
+	VkSampler sampler;
+	VkImageView imageView;
+	VkImageLayout imageLayout;
+};
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkBufferView)
+struct VkWriteDescriptorSet
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorSet dstSet;
+	uint32_t dstBinding;
+	uint32_t dstArrayElement;
+	uint32_t descriptorCount;
+	VkDescriptorType descriptorType;
+	const VkDescriptorImageInfo*pImageInfo;
+	const VkDescriptorBufferInfo*pBufferInfo;
+	const VkBufferView*pTexelBufferView;
+};
+struct VkCopyDescriptorSet
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDescriptorSet srcSet;
+	uint32_t srcBinding;
+	uint32_t srcArrayElement;
+	VkDescriptorSet dstSet;
+	uint32_t dstBinding;
+	uint32_t dstArrayElement;
+	uint32_t descriptorCount;
+};
+typedef void (VKAPI_PTR *PFN_vkUpdateDescriptorSets)(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet*pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet*pDescriptorCopies);
 enum VkImageUsageFlagBits
 {
 	VK_IMAGE_USAGE_TRANSFER_SRC_BIT = 0x00000001,
@@ -2349,45 +2388,6 @@ struct VkImageMemoryBarrier
 	VkImageSubresourceRange subresourceRange;
 };
 #define VK_QUEUE_FAMILY_IGNORED (~0U)
-struct VkDescriptorImageInfo
-{
-	VkSampler sampler;
-	VkImageView imageView;
-	VkImageLayout imageLayout;
-};
-struct VkDescriptorBufferInfo
-{
-	VkBuffer buffer;
-	VkDeviceSize offset;
-	VkDeviceSize range;
-};
-VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkBufferView)
-struct VkWriteDescriptorSet
-{
-	VkStructureType sType;
-	const void*pNext;
-	VkDescriptorSet dstSet;
-	uint32_t dstBinding;
-	uint32_t dstArrayElement;
-	uint32_t descriptorCount;
-	VkDescriptorType descriptorType;
-	const VkDescriptorImageInfo*pImageInfo;
-	const VkDescriptorBufferInfo*pBufferInfo;
-	const VkBufferView*pTexelBufferView;
-};
-struct VkCopyDescriptorSet
-{
-	VkStructureType sType;
-	const void*pNext;
-	VkDescriptorSet srcSet;
-	uint32_t srcBinding;
-	uint32_t srcArrayElement;
-	VkDescriptorSet dstSet;
-	uint32_t dstBinding;
-	uint32_t dstArrayElement;
-	uint32_t descriptorCount;
-};
-typedef void (VKAPI_PTR *PFN_vkUpdateDescriptorSets)(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet*pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet*pDescriptorCopies);
 typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence*pFences);
 typedef VkFlags VkCommandPoolResetFlags;
 typedef VkResult (VKAPI_PTR *PFN_vkResetCommandPool)(VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags);
@@ -2420,6 +2420,7 @@ enum VkCommandBufferUsageFlagBits
 	VK_COMMAND_BUFFER_USAGE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
 };
 typedef VkResult (VKAPI_PTR *PFN_vkBeginCommandBuffer)(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo*pBeginInfo);
+typedef void (VKAPI_PTR *PFN_vkCmdCopyBuffer)(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy*pRegions);
 struct VkBufferMemoryBarrier
 {
 	VkStructureType sType;
@@ -2432,7 +2433,6 @@ struct VkBufferMemoryBarrier
 	VkDeviceSize offset;
 	VkDeviceSize size;
 };
-typedef void (VKAPI_PTR *PFN_vkCmdCopyBuffer)(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy*pRegions);
 struct VkMemoryBarrier
 {
 	VkStructureType sType;
@@ -2576,6 +2576,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkCreateShaderModule) \
 		VK_FUNCTION(vkCreateGraphicsPipelines) \
 		VK_FUNCTION(vkDestroyShaderModule) \
+		VK_FUNCTION(vkUpdateDescriptorSets) \
 		VK_FUNCTION(vkDestroyImage) \
 		VK_FUNCTION(vkCreateCommandPool) \
 		VK_FUNCTION(vkCreateFence) \
@@ -2593,7 +2594,6 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkAcquireNextImageKHR) \
 		VK_FUNCTION(vkWaitForFences) \
 		VK_FUNCTION(vkGetFenceStatus) \
-		VK_FUNCTION(vkUpdateDescriptorSets) \
 		VK_FUNCTION(vkResetFences) \
 		VK_FUNCTION(vkResetCommandPool) \
 		VK_FUNCTION(vkBeginCommandBuffer) \

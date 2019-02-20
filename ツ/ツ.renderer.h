@@ -26,6 +26,7 @@ struct Vertex
 enum Renderer_Transfer_Operation_Type
 {
     RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER,
+    RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER,
     RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE
 };
 
@@ -75,7 +76,7 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* 
 void renderer_queue_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation* operation);
 
 void renderer_begin_frame(Frame_Parameters* frame_params);
-void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count);
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform);
 void renderer_end_frame();
 
 void renderer_submit_frame(Frame_Parameters* frame_params);

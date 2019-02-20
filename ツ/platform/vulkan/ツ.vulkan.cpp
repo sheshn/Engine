@@ -23,13 +23,6 @@
 
 #define MAX_SWAPCHAIN_IMAGES 3
 #define MAX_FRAME_RESOURCES  3
-#define TRANSFER_MEMORY_SIZE megabytes(32)
-#define MESH_MEMORY_SIZE     megabytes(256)
-#define TEXTURE_MEMORY_SIZE  megabytes(256)
-
-#define MAX_2D_TEXTURES          2048
-#define MAX_DRAW_CALLS_PER_FRAME 15000
-#define DRAW_CALLS_MEMORY_SIZE   (MAX_FRAME_RESOURCES * MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
 
 struct Vulkan_Context
 {
@@ -189,6 +182,22 @@ struct Vulkan_Texture
     VkImageView image_view;
 };
 
+struct Per_Draw_Uniforms
+{
+    u32 xform_index;
+    u32 material_index;
+};
+
+#define MAX_2D_TEXTURES          2048
+#define MAX_DRAW_CALLS_PER_FRAME 8192
+
+#define TRANSFER_MEMORY_SIZE          megabytes(32)
+#define MESH_MEMORY_SIZE              megabytes(256)
+#define STORAGE_64_MEMORY_SIZE        megabytes(256)
+#define TEXTURE_MEMORY_SIZE           megabytes(256)
+#define DRAW_CALLS_MEMORY_SIZE        (MAX_FRAME_RESOURCES * MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
+#define PER_DRAW_UNIFORMS_MEMORY_SIZE (MAX_FRAME_RESOURCES * MAX_DRAW_CALLS_PER_FRAME * sizeof(Per_Draw_Uniforms))
+
 struct Frame_Resources
 {
     VkCommandBuffer graphics_command_buffer;
@@ -199,8 +208,12 @@ struct Frame_Resources
     VkSemaphore render_finished_semaphore;
     u32         swapchain_image_index;
 
+    VkDescriptorSet descriptor_set;
+
     Memory_Arena draw_command_arena;
     u32*         draw_call_count;
+
+    Memory_Arena per_draw_uniforms_arena;
 };
 
 struct Renderer
@@ -222,9 +235,16 @@ struct Renderer
     Vulkan_Memory_Block draw_memory_block;
     VkBuffer            draw_buffer;
 
+    Vulkan_Memory_Block per_draw_uniforms_memory_block;
+    VkBuffer            per_draw_uniforms_buffer;
+
     Vulkan_Memory_Block mesh_memory_block;
     VkBuffer            mesh_buffer;
     u64                 mesh_buffer_used;
+
+    Vulkan_Memory_Block storage_64_memory_block;
+    VkBuffer            storage_64_buffer;
+    u64                 storage_64_buffer_used;
 
     Vulkan_Memory_Block texture_memory_block;
     u64                 texture_memory_used;
@@ -233,10 +253,12 @@ struct Renderer
     VkFormat  texture_2d_format;
     u32       max_2d_textures;
 
-    Vulkan_Buffer*  buffers;
+    Vulkan_Buffer*  mesh_buffers;
+    Vulkan_Buffer*  storage_64_buffers;
     Vulkan_Texture* textures;
 
-    VkDescriptorSetLayout descriptor_set_layout;
+    VkDescriptorSetLayout static_descriptor_set_layout;
+    VkDescriptorSetLayout per_frame_descriptor_set_layout;
     VkDescriptorPool      descriptor_pool;
     VkDescriptorSet       descriptor_set;
 
@@ -428,48 +450,84 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     texture_2d_layout_binding.descriptorCount = renderer.max_2d_textures;
     texture_2d_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorSetLayoutBinding layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding};
+    VkDescriptorSetLayoutBinding storage_64_layout_binding = {};
+    storage_64_layout_binding.binding = 2;
+    storage_64_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    storage_64_layout_binding.descriptorCount = 1;
+    storage_64_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_64_layout_binding};
 
     // NOTE: VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT allows binding the entire texture_2d array even if we don't use renderer.max_2d_textures
     // Without this, the validation layer complains.
-    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT};
+    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT, 0};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
     layout_binding_flags_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
     layout_binding_flags_create_info.bindingCount = array_count(binding_flags);
     layout_binding_flags_create_info.pBindingFlags = binding_flags;
 
-    VkDescriptorSetLayoutCreateInfo layout_create_info = {};
-    layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layout_create_info.pNext = &layout_binding_flags_create_info;
-    layout_create_info.bindingCount = array_count(layout_bindings);
-    layout_create_info.pBindings = layout_bindings;
-    VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &layout_create_info, NULL, &renderer.descriptor_set_layout));
+    VkDescriptorSetLayoutCreateInfo static_layout_create_info = {};
+    static_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    static_layout_create_info.pNext = &layout_binding_flags_create_info;
+    static_layout_create_info.bindingCount = array_count(static_layout_bindings);
+    static_layout_create_info.pBindings = static_layout_bindings;
+    VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &static_layout_create_info, NULL, &renderer.static_descriptor_set_layout));
+
+    VkDescriptorSetLayoutBinding per_draw_uniforms_layout_binding = {};
+    per_draw_uniforms_layout_binding.binding = 0;
+    per_draw_uniforms_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    per_draw_uniforms_layout_binding.descriptorCount = 1;
+    per_draw_uniforms_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding per_frame_layout_bindings[] = {per_draw_uniforms_layout_binding};
+    VkDescriptorSetLayoutCreateInfo per_frame_layout_create_info = {};
+    per_frame_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    per_frame_layout_create_info.bindingCount = array_count(per_frame_layout_bindings);
+    per_frame_layout_create_info.pBindings = per_frame_layout_bindings;
+    VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &per_frame_layout_create_info, NULL, &renderer.per_frame_descriptor_set_layout));
 
     VkDescriptorPoolSize sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
     VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + 1};
-    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size};
+    VkDescriptorPoolSize storage_64_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolSize per_draw_uniforms_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES};
+    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size, storage_64_descriptor_pool_size, per_draw_uniforms_descriptor_pool_size};
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {};
     descriptor_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     descriptor_pool_create_info.poolSizeCount = array_count(descriptor_pool_sizes);
     descriptor_pool_create_info.pPoolSizes = descriptor_pool_sizes;
-    descriptor_pool_create_info.maxSets = 1;
+    descriptor_pool_create_info.maxSets = 1 + MAX_FRAME_RESOURCES;
     VK_CALL(vkCreateDescriptorPool(vulkan_context.device, &descriptor_pool_create_info, NULL, &renderer.descriptor_pool));
 
-    // TODO: Create descriptor set for each frame resource (triple buffer)?
+    VkDescriptorSet descriptor_sets[1 + MAX_FRAME_RESOURCES];
+    VkDescriptorSetLayout set_layouts[1 + MAX_FRAME_RESOURCES];
+    set_layouts[0] = renderer.static_descriptor_set_layout;
+    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
+    {
+        set_layouts[i + 1] = renderer.per_frame_descriptor_set_layout;
+    }
+
     VkDescriptorSetAllocateInfo descriptor_set_allocate_info = {};
     descriptor_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     descriptor_set_allocate_info.descriptorPool = renderer.descriptor_pool;
-    descriptor_set_allocate_info.descriptorSetCount = 1;
-    descriptor_set_allocate_info.pSetLayouts = &renderer.descriptor_set_layout;
-    VK_CALL(vkAllocateDescriptorSets(vulkan_context.device, &descriptor_set_allocate_info, &renderer.descriptor_set));
+    descriptor_set_allocate_info.descriptorSetCount = 1 + MAX_FRAME_RESOURCES;
+    descriptor_set_allocate_info.pSetLayouts = set_layouts;
+    VK_CALL(vkAllocateDescriptorSets(vulkan_context.device, &descriptor_set_allocate_info, descriptor_sets));
+
+    renderer.descriptor_set = descriptor_sets[0];
+    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
+    {
+        renderer.frame_resources[i].descriptor_set = descriptor_sets[i + 1];
+    }
+
+    VkDescriptorSetLayout layouts[] = {renderer.static_descriptor_set_layout, renderer.per_frame_descriptor_set_layout};
 
     // TODO: Make it easier to create piplines!
     VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
     pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_create_info.setLayoutCount = 1;
-    pipeline_layout_create_info.pSetLayouts = &renderer.descriptor_set_layout;
+    pipeline_layout_create_info.setLayoutCount = array_count(layouts);
+    pipeline_layout_create_info.pSetLayouts = layouts;
     VK_CALL(vkCreatePipelineLayout(vulkan_context.device, &pipeline_layout_create_info, NULL, &renderer.pipeline_layout));
 
     VkVertexInputBindingDescription vertex_binding_description = {};
@@ -589,10 +647,30 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.draw_buffer, &renderer.draw_memory_block);
 
+    // TODO: Replace with HOST_CACHED
+    buffer_create_info.size = PER_DRAW_UNIFORMS_MEMORY_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.per_draw_uniforms_buffer, &renderer.per_draw_uniforms_memory_block);
+
     renderer.mesh_buffer_used = 0;
     buffer_create_info.size = MESH_MEMORY_SIZE;
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block);
+
+    renderer.storage_64_buffer_used = 0;
+    buffer_create_info.size = STORAGE_64_MEMORY_SIZE;
+    buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.storage_64_buffer, &renderer.storage_64_memory_block);
+
+    VkDescriptorBufferInfo buffer_info = {renderer.storage_64_buffer, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet storage_write = {};
+    storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    storage_write.dstSet = renderer.descriptor_set;
+    storage_write.dstBinding = 2;
+    storage_write.descriptorCount = 1;
+    storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    storage_write.pBufferInfo = &buffer_info;
+    vkUpdateDescriptorSets(vulkan_context.device, 1, &storage_write, 0, NULL);
 
     // NOTE: Using BC7 format for all 2D textures for now
     renderer.texture_2d_format = VK_FORMAT_BC7_UNORM_BLOCK;
@@ -617,7 +695,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkDestroyImage(vulkan_context.device, dummy_image, NULL);
 
     // TODO: How many buffer slots should be reserved?
-    renderer.buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
+    renderer.mesh_buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
+    renderer.storage_64_buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
     renderer.textures = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Texture, renderer.max_2d_textures);
 
     VkCommandPoolCreateInfo command_pool_create_info = {};
@@ -655,6 +734,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     u64 per_frame_draw_buffer_size = DRAW_CALLS_MEMORY_SIZE / MAX_FRAME_RESOURCES;
     per_frame_draw_buffer_size = (per_frame_draw_buffer_size - 1) - ((per_frame_draw_buffer_size - 1) % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize);
 
+    u64 per_frame_draw_uniforms_buffer_size = PER_DRAW_UNIFORMS_MEMORY_SIZE / MAX_FRAME_RESOURCES;
+
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
         VK_CALL(vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].image_available_semaphore));
@@ -663,10 +744,21 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         VK_CALL(vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].graphics_command_buffer));
 
         renderer.frame_resources[i].should_record_command_buffer = true;
-        renderer.frame_resources[i].draw_call_count = (u32*)(renderer.draw_memory_block.base + i * per_frame_draw_buffer_size);
-        renderer.frame_resources[i].draw_command_arena = Memory_Arena{((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), per_frame_draw_buffer_size - sizeof(u32)};
-    }
 
+        renderer.frame_resources[i].draw_call_count = (u32*)(renderer.draw_memory_block.base + i * per_frame_draw_buffer_size);
+        renderer.frame_resources[i].draw_command_arena = {((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), per_frame_draw_buffer_size - sizeof(u32)};
+        renderer.frame_resources[i].per_draw_uniforms_arena = {(u8*)(renderer.per_draw_uniforms_memory_block.base + i * per_frame_draw_uniforms_buffer_size), per_frame_draw_buffer_size};
+
+        VkDescriptorBufferInfo buffer_info = {renderer.per_draw_uniforms_buffer, i * per_frame_draw_uniforms_buffer_size, per_frame_draw_uniforms_buffer_size};
+        VkWriteDescriptorSet buffer_write = {};
+        buffer_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        buffer_write.dstSet = renderer.frame_resources[i].descriptor_set;
+        buffer_write.dstBinding = 0;
+        buffer_write.descriptorCount = 1;
+        buffer_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        buffer_write.pBufferInfo = &buffer_info;
+        vkUpdateDescriptorSets(vulkan_context.device, 1, &buffer_write, 0, NULL);
+    }
 
     // TODO: Remove this test code
     Memory_Arena_Marker temp_marker = memory_arena_get_marker(vulkan_context.memory_arena);
@@ -703,6 +795,30 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         index_buffer[4] = 2;
         index_buffer[5] = 3;
 
+        renderer_queue_transfer(&renderer.transfer_queue, op);
+    }
+
+    // TODO: Remove this test code
+    Renderer_Buffer xform_buffer = renderer_create_buffer_reference(0);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER, 64);
+    if (op)
+    {
+        op->buffer = xform_buffer;
+        v4* mem = (v4*)op->memory;
+        mem[0] = v4{1, 0, 0, 0};
+        mem[1] = v4{0, 1, 0, 0};
+        mem[2] = v4{0, 0, 1, 0};
+        mem[3] = v4{0.1f, 0.1f, 0, 1};
+
+        renderer_queue_transfer(&renderer.transfer_queue, op);
+    }
+
+    Renderer_Buffer material_buffer = renderer_create_buffer_reference(1);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER, 64);
+    if (op)
+    {
+        op->buffer = material_buffer;
+        memset(op->memory, 0, 64);
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
@@ -956,6 +1072,11 @@ internal void resolve_pending_transfer_operations()
         u64 mesh_buffer_dst_offset = renderer.mesh_buffer_used;
         b32 create_new_mesh_buffer_copy = true;
 
+        VkBufferCopy* storage_64_buffer_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferCopy, transfer_operations);
+        u32 storage_64_copy_count = 0;
+        u64 storage_64_buffer_dst_offset = renderer.storage_64_buffer_used;
+        b32 create_new_storage_64_buffer_copy = true;
+
         // TODO: How many VkBufferImageCopies should we actually get?
         VkBufferImageCopy* texture_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferImageCopy, transfer_operations * 16);
         u32 texture_copy_count = 0;
@@ -984,6 +1105,7 @@ internal void resolve_pending_transfer_operations()
                     size = operation->size - renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.dequeue_location;
                     src_offset = 0;
                     create_new_mesh_buffer_copy = true;
+                    create_new_storage_64_buffer_copy = true;
                 }
 
                 switch (operation->type)
@@ -1008,8 +1130,34 @@ internal void resolve_pending_transfer_operations()
                     buffer_copy->size += size;
 
                     // TODO: Reuse buffer slot. We also need to free the buffer at this slot if it was previously used.
-                    renderer.buffers[operation->buffer.id].offset = (u32)renderer.mesh_buffer_used;
+                    renderer.mesh_buffers[operation->buffer.id].offset = (u32)renderer.mesh_buffer_used;
                     renderer.mesh_buffer_used += size;
+                    create_new_storage_64_buffer_copy = true;
+                } break;
+                // TODO: Transfer specific things (Transform, Material) instead of 'STORAGE_64'. Seems like a better idea API wise.
+                case RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER:
+                {
+                    if (create_new_storage_64_buffer_copy)
+                    {
+                        if (storage_64_copy_count > 0)
+                        {
+                            storage_64_buffer_dst_offset += storage_64_buffer_copies[storage_64_copy_count - 1].size;
+                        }
+                        storage_64_buffer_copies[storage_64_copy_count].srcOffset = src_offset;
+                        storage_64_buffer_copies[storage_64_copy_count].dstOffset = storage_64_buffer_dst_offset;
+                        storage_64_buffer_copies[storage_64_copy_count].size = 0;
+                        storage_64_copy_count++;
+
+                        create_new_storage_64_buffer_copy = false;
+                    }
+
+                    VkBufferCopy* buffer_copy = &storage_64_buffer_copies[storage_64_copy_count - 1];
+                    buffer_copy->size += size;
+
+                    // TODO: Reuse buffer slot. We also need to free the buffer at this slot if it was previously used.
+                    renderer.storage_64_buffers[operation->buffer.id].offset = (u32)renderer.storage_64_buffer_used;
+                    renderer.storage_64_buffer_used += size;
+                    create_new_mesh_buffer_copy = true;
                 } break;
                 case RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE:
                 {
@@ -1018,6 +1166,7 @@ internal void resolve_pending_transfer_operations()
                     image_create_info.imageType = VK_IMAGE_TYPE_2D;
                     image_create_info.format = renderer.texture_2d_format;
                     image_create_info.extent = {operation->texture.width, operation->texture.height, 1};
+                    // NOTE: This assumes all textures have all mipmaps in them.
                     image_create_info.mipLevels = most_significant_bit_index(max(operation->texture.width, operation->texture.height)) + 1;
                     image_create_info.arrayLayers = 1;
                     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1091,7 +1240,7 @@ internal void resolve_pending_transfer_operations()
             }
         }
 
-        if (mesh_copy_count > 0 || texture_barrier_count > 0)
+        if (mesh_copy_count > 0 || texture_barrier_count > 0 || storage_64_copy_count > 0)
         {
             vkResetFences(vulkan_context.device, 1, &renderer.transfer_command_buffer_fence);
             vkResetCommandPool(vulkan_context.device, renderer.transfer_command_pool, 0);
@@ -1102,12 +1251,19 @@ internal void resolve_pending_transfer_operations()
 
             vkBeginCommandBuffer(renderer.transfer_command_buffer, &command_buffer_begin_info);
 
-            VkBufferMemoryBarrier* buffer_barriers = NULL;
             if (mesh_copy_count > 0)
             {
                 vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.mesh_buffer, mesh_copy_count, mesh_buffer_copies);
+            }
+            if (storage_64_copy_count > 0)
+            {
+                vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.storage_64_buffer, storage_64_copy_count, storage_64_buffer_copies);
+            }
 
-                buffer_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferMemoryBarrier, mesh_copy_count);
+            VkBufferMemoryBarrier* buffer_barriers = NULL;
+            if (mesh_copy_count > 0 || storage_64_copy_count > 0)
+            {
+                buffer_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferMemoryBarrier, mesh_copy_count + storage_64_copy_count);
                 for (u32 i = 0; i < mesh_copy_count; ++i)
                 {
                     buffer_barriers[i] = {};
@@ -1120,7 +1276,20 @@ internal void resolve_pending_transfer_operations()
                     buffer_barriers[i].offset = mesh_buffer_copies[i].dstOffset;
                     buffer_barriers[i].size = mesh_buffer_copies[i].size;
                 }
+                for (u32 i = 0; i < storage_64_copy_count; ++i)
+                {
+                    buffer_barriers[i] = {};
+                    buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    buffer_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    buffer_barriers[i].dstAccessMask = 0;
+                    buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
+                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    buffer_barriers[i].buffer = renderer.storage_64_buffer;
+                    buffer_barriers[i].offset = storage_64_buffer_copies[i].dstOffset;
+                    buffer_barriers[i].size = storage_64_buffer_copies[i].size;
+                }
             }
+
             if (texture_barrier_count > 0)
             {
                 vkCmdPipelineBarrier(renderer.transfer_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, texture_barrier_count, texture_barriers);
@@ -1162,9 +1331,10 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     renderer.current_render_frame = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
     *renderer.current_render_frame->draw_call_count = 0;
     memory_arena_reset(&renderer.current_render_frame->draw_command_arena);
+    memory_arena_reset(&renderer.current_render_frame->per_draw_uniforms_arena);
 }
 
-void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count)
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)
 {
     assert(renderer.current_render_frame);
 
@@ -1179,9 +1349,13 @@ void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_co
     VkDrawIndexedIndirectCommand* draw_command = (VkDrawIndexedIndirectCommand*)memory_arena_reserve(&renderer.current_render_frame->draw_command_arena, sizeof(VkDrawIndexedIndirectCommand));
     draw_command->indexCount = index_count;
     draw_command->instanceCount = 1;
-    draw_command->vertexOffset = renderer.buffers[buffer.id].offset;
+    draw_command->vertexOffset = renderer.mesh_buffers[buffer.id].offset;
     draw_command->firstIndex = (draw_command->vertexOffset + index_offset) / sizeof(u32) / sizeof(u32);
     draw_command->firstInstance = 0;
+
+    Per_Draw_Uniforms* draw_uniforms = (Per_Draw_Uniforms*)memory_arena_reserve(&renderer.current_render_frame->per_draw_uniforms_arena, sizeof(Per_Draw_Uniforms));
+    draw_uniforms->xform_index = xform.id;
+    draw_uniforms->material_index = material.id;
 }
 
 void renderer_end_frame()
@@ -1227,6 +1401,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
         vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, 1, &renderer.descriptor_set, 0, NULL);
+        vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 1, 1, &frame_resources->descriptor_set, 0, NULL);
 
         VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
         vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
