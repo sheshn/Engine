@@ -118,12 +118,18 @@ JOB_ENTRY_POINT(render_entry_point)
     }
 
     // TODO: Remove this test code
-    Renderer_Buffer buffer = renderer_create_buffer_reference(0);
-    Renderer_Buffer material = renderer_create_buffer_reference(1);
-    Renderer_Buffer xform = renderer_create_buffer_reference(0);
-    renderer_begin_frame(frame_params);
-    renderer_draw_buffer(buffer, 64 * 4, 6, material, xform);
-    renderer_end_frame();
+    if (frame_params->frame_number > 3)
+    {
+        Renderer_Buffer buffer = renderer_create_buffer_reference(0);
+        Renderer_Buffer xform = renderer_create_buffer_reference(0);
+        Renderer_Buffer material = renderer_create_buffer_reference(1);
+        Renderer_Buffer xform2 = renderer_create_buffer_reference(2);
+        Renderer_Buffer material2 = renderer_create_buffer_reference(3);
+        renderer_begin_frame(frame_params);
+        renderer_draw_buffer(buffer, 64 * 4, 6, material, xform);
+        renderer_draw_buffer(buffer, 64 * 4, 6, material2, xform2);
+        renderer_end_frame();
+    }
     // printf("RENDER %lld\n", frame_params->frame_number);
 }
 

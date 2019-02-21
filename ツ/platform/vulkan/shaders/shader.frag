@@ -7,7 +7,10 @@
 #define f32 float
 #define f64 double
 
+#define v2 vec2
+#define v3 vec3
 #define v4 vec4
+#define uv2 uvec2
 #define m4x4 mat4
 
 struct Data_64
@@ -31,19 +34,12 @@ struct Transform
     m4x4 model;
 };
 
-struct Per_Draw_Uniforms
-{
-    u32 xform_index;
-    u32 material_index;
-};
-
 layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
 layout(set = 0, binding = 1) uniform texture2D textures_2d[];
-layout(set = 0, binding = 2) buffer DATA_64 { Data_64 data[]; } uniforms_64;
+layout(set = 0, binding = 2) buffer storage_64_buffer { Data_64 storage_64[]; };
 
-layout(set = 1, binding = 0) uniform PER_DRAW { Per_Draw_Uniforms uniforms[8192]; } per_draw_uniforms;
-
-layout(location = 0) in vec2 in_uv;
+layout(location = 0) flat in uv2 in_instance_data;
+layout(location = 1) in vec2 in_uv;
 
 layout(location = 0) out vec4 out_color;
 
@@ -54,7 +50,6 @@ Material data64_to_material(Data_64 data)
 
 void main()
 {
-    Per_Draw_Uniforms draw_uniforms = per_draw_uniforms.uniforms[0];
-    Material material = data64_to_material(uniforms_64.data[draw_uniforms.material_index]);
+    Material material = data64_to_material(storage_64[in_instance_data.y]);
     out_color = texture(sampler2D(textures_2d[material.albedo_texture_index], texture_2d_sampler), in_uv);
 }

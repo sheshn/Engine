@@ -433,7 +433,6 @@ VK_DEFINE_HANDLE(VkInstance)
 typedef VkResult (VKAPI_PTR *PFN_vkCreateInstance)(const VkInstanceCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkInstance *pInstance);
 #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T *object;
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDebugUtilsMessengerEXT)
-typedef uint32_t VkBool32;
 enum VkDebugUtilsMessageSeverityFlagBitsEXT
 {
 	VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT = 0x00000001,
@@ -538,6 +537,7 @@ enum VkPhysicalDeviceType
 #define VK_UUID_SIZE 16
 typedef uint64_t VkDeviceSize;
 typedef VkFlags VkSampleCountFlags;
+typedef uint32_t VkBool32;
 struct VkPhysicalDeviceLimits
 {
 	uint32_t maxImageDimension1D;
@@ -1309,6 +1309,7 @@ struct VkDeviceCreateInfo
 };
 #define VK_KHR_SWAPCHAIN_EXTENSION_NAME "VK_KHR_swapchain"
 #define VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME "VK_KHR_draw_indirect_count"
+#define VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME "VK_EXT_descriptor_indexing"
 typedef VkResult (VKAPI_PTR *PFN_vkCreateDevice)(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkDevice *pDevice);
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetDeviceProcAddr)(VkDevice device, const char*pName);
 typedef void (VKAPI_PTR *PFN_vkGetDeviceQueue)(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue *pQueue);
