@@ -46,9 +46,10 @@ b32 win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
         char* enabled_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME};
     #endif
 
-    instance_create_info.enabledExtensionCount = sizeof(enabled_extensions) / sizeof(enabled_extensions[0]);
+    instance_create_info.enabledExtensionCount = array_count(enabled_extensions);
     instance_create_info.ppEnabledExtensionNames = enabled_extensions;
-    assert(vkCreateInstance(&instance_create_info, NULL, &vulkan_instance) == VK_SUCCESS);
+    VkResult result = vkCreateInstance(&instance_create_info, NULL, &vulkan_instance);
+    assert(result == VK_SUCCESS);
 
     vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(vulkan_instance, "vkCreateWin32SurfaceKHR");
 
@@ -56,7 +57,8 @@ b32 win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
     surface_create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     surface_create_info.hwnd = window;
     surface_create_info.hinstance = GetModuleHandle(NULL);
-    assert(vkCreateWin32SurfaceKHR(vulkan_instance, &surface_create_info, NULL, &vulkan_surface) == VK_SUCCESS);
+    result = vkCreateWin32SurfaceKHR(vulkan_instance, &surface_create_info, NULL, &vulkan_surface);
+    assert(result == VK_SUCCESS);
 
     u64 memory_size = megabytes(64);
     vulkan_arena = {allocate_memory(memory_size), memory_size, 0};

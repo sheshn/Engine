@@ -14,17 +14,6 @@
 #define megabytes(value) (kilobytes((value)) * 1024)
 #define gigabytes(value) (megabytes((value)) * 1024)
 
-struct Frame_Parameters
-{
-    Frame_Parameters* next;
-    Frame_Parameters* previous;
-
-    u64         frame_number;
-    Job_Counter game_counter;
-    Job_Counter render_counter;
-    Job_Counter gpu_counter;
-};
-
 struct Memory_Arena
 {
     u8* base;

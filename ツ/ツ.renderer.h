@@ -1,7 +1,6 @@
 #pragma once
 
-#include "ツ.common.h"
-#include "ツ.math.h"
+#include "ツ.h"
 
 struct Renderer_Buffer
 {

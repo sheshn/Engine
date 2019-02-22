@@ -19,7 +19,11 @@
     }
 #endif
 
-#define VK_CALL(result) assert((result) == VK_SUCCESS)
+#if defined(DEBUG)
+    #define VK_CALL(result) assert((result) == VK_SUCCESS)
+#else
+   #define VK_CALL(result) result
+#endif
 
 #define MAX_SWAPCHAIN_IMAGES 3
 #define MAX_FRAME_RESOURCES  3
@@ -590,7 +594,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     // TODO: Use final read file implementation
     u8* vertex_shader_code;
     u64 vertex_shader_code_size;
-    assert(DEBUG_read_file("shaders/vertex.spv", vulkan_context.memory_arena, &vertex_shader_code_size, &vertex_shader_code));
+    b32 read_result = DEBUG_read_file("shaders/vertex.spv", vulkan_context.memory_arena, &vertex_shader_code_size, &vertex_shader_code);
+    assert(read_result);
 
     VkShaderModule vertex_shader_module, fragment_shader_module;
     VkShaderModuleCreateInfo shader_module_create_info = {};
@@ -601,7 +606,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     u8* fragment_shader_code;
     u64 fragment_shader_code_size;
-    assert(DEBUG_read_file("shaders/fragment.spv", vulkan_context.memory_arena, &fragment_shader_code_size, &fragment_shader_code));
+    read_result = DEBUG_read_file("shaders/fragment.spv", vulkan_context.memory_arena, &fragment_shader_code_size, &fragment_shader_code);
+    assert(read_result);
 
     shader_module_create_info.codeSize = fragment_shader_code_size;
     shader_module_create_info.pCode = (u32*)fragment_shader_code;
@@ -773,7 +779,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     Memory_Arena_Marker temp_marker = memory_arena_get_marker(vulkan_context.memory_arena);
     u8* texture_data;
     u64 texture_size = 0;
-    assert(DEBUG_read_file("../data/image1.tsu", vulkan_context.memory_arena, &texture_size, &texture_data));
+    b32 texture_result = DEBUG_read_file("../data/image1.tsu", vulkan_context.memory_arena, &texture_size, &texture_data);
+    assert(texture_result);
     Renderer_Texture renderer_texture = renderer_create_texture_reference(0, 512, 512);
 
     Renderer_Transfer_Operation* op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, texture_size);
@@ -859,7 +866,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     // TODO: The validation layer will complain on the following example since transfer memory is not aligned to 16 (BC7 texel size).
     u8* texture_data2;
     u64 texture_size2 = 0;
-    assert(DEBUG_read_file("../data/image2.tsu", vulkan_context.memory_arena, &texture_size2, &texture_data2));
+    texture_result = DEBUG_read_file("../data/image2.tsu", vulkan_context.memory_arena, &texture_size2, &texture_data2);
+    assert(texture_result);
     Renderer_Texture renderer_texture1 = renderer_create_texture_reference(1, 512, 512);
     op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, texture_size2);
     if (op)
@@ -1414,6 +1422,7 @@ void renderer_end_frame()
 {
     assert(renderer.current_render_frame);
 
+    // NOTE: Flush all memory used by the frame (aligning size/offset to nonCoherentAtomSize).
     VkMappedMemoryRange draw_calls_range = {};
     draw_calls_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     draw_calls_range.memory = renderer.frame_resources_memory_block.device_memory;

@@ -1,4 +1,5 @@
 #include "ツ.renderer.h"
+#include "ツ.math.h"
 #include "ツ.intrinsic.h"
 
 Renderer_Buffer renderer_create_buffer_reference(u32 id)

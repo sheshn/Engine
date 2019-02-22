@@ -101,6 +101,10 @@ JOB_ENTRY_POINT(game_entry_point)
         wait_for_counter(&frame_params->previous->game_counter, 0);
     }
 
+    LARGE_INTEGER start_counter;
+    QueryPerformanceCounter(&start_counter);
+    frame_params->start_time = start_counter.QuadPart;
+
     // printf("GAME %lld\n", frame_params->frame_number);
 }
 
@@ -118,6 +122,7 @@ JOB_ENTRY_POINT(render_entry_point)
     }
 
     // TODO: Remove this test code
+    renderer_begin_frame(frame_params);
     if (frame_params->frame_number > 3)
     {
         Renderer_Buffer buffer = renderer_create_buffer_reference(0);
@@ -125,15 +130,14 @@ JOB_ENTRY_POINT(render_entry_point)
         Renderer_Buffer material = renderer_create_buffer_reference(1);
         Renderer_Buffer xform2 = renderer_create_buffer_reference(2);
         Renderer_Buffer material2 = renderer_create_buffer_reference(3);
-        renderer_begin_frame(frame_params);
 
         Renderer_Material materials[] = {material, material2};
         Renderer_Transform transforms[] = {xform, xform2};
         renderer_draw_buffer(buffer, 64 * 4, 6, 2, materials, transforms);
         //renderer_draw_buffer(buffer, 64 * 4, 6, material, xform);
         //renderer_draw_buffer(buffer, 64 * 4, 6, material2, xform2);
-        renderer_end_frame();
     }
+    renderer_end_frame();
     // printf("RENDER %lld\n", frame_params->frame_number);
 }
 
@@ -152,10 +156,9 @@ JOB_ENTRY_POINT(gpu_entry_point)
 
     renderer_submit_frame(frame_params);
 
-    if (frame_params->frame_number % 110 == 0)
-    {
-        printf("GPU %lld\n", frame_params->frame_number);
-    }
+    LARGE_INTEGER end_counter;
+    QueryPerformanceCounter(&end_counter);
+    frame_params->end_time = end_counter.QuadPart;
 }
 
 int main()
@@ -198,6 +201,9 @@ int main()
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
 
+    LARGE_INTEGER performance_frequency;
+    QueryPerformanceFrequency(&performance_frequency);
+
     running = true;
     while (running)
     {
@@ -221,6 +227,14 @@ int main()
         if (current_frame->frame_number > 2)
         {
             wait_for_counter(&current_frame->previous->previous->previous->gpu_counter, 0);
+
+            if (current_frame->frame_number % 110 == 0)
+            {
+                u64 elapsed_time = current_frame->end_time - current_frame->start_time;
+                f64 ms_per_frame = (1000.0 * elapsed_time) / performance_frequency.QuadPart;
+                f64 fps = performance_frequency.QuadPart / (f64)elapsed_time;
+                printf("ms per frame: %f, fps: %f\n", ms_per_frame, fps);
+            }
         }
     }
 
