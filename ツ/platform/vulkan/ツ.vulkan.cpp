@@ -230,7 +230,7 @@ struct Frame_Resources
     u64             uniforms_offset;
 
     // NOTE: This is the total space the draw commands, instances, and uniforms take.
-    // (Including extra padding to align to the nonCoherentAtomSize)
+    // (Including extra padding to align to minUniformBufferOffsetAlignment)
     u64 data_memory_size;
 };
 
@@ -489,13 +489,13 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     static_layout_create_info.pBindings = static_layout_bindings;
     VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &static_layout_create_info, NULL, &renderer.static_descriptor_set_layout));
 
-    VkDescriptorSetLayoutBinding per_draw_uniforms_layout_binding = {};
-    per_draw_uniforms_layout_binding.binding = 0;
-    per_draw_uniforms_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    per_draw_uniforms_layout_binding.descriptorCount = 1;
-    per_draw_uniforms_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutBinding per_frame_uniforms_layout_binding = {};
+    per_frame_uniforms_layout_binding.binding = 0;
+    per_frame_uniforms_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    per_frame_uniforms_layout_binding.descriptorCount = 1;
+    per_frame_uniforms_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorSetLayoutBinding per_frame_layout_bindings[] = {per_draw_uniforms_layout_binding};
+    VkDescriptorSetLayoutBinding per_frame_layout_bindings[] = {per_frame_uniforms_layout_binding};
     VkDescriptorSetLayoutCreateInfo per_frame_layout_create_info = {};
     per_frame_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     per_frame_layout_create_info.bindingCount = array_count(per_frame_layout_bindings);
@@ -654,7 +654,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     // TODO: Replace with HOST_CACHED
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
 
-    u64 aligned_frame_data_size = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize - 1) & -(s64)vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+    // NOTE: Assuming that the minUniformBufferOffsetAlignment is a multiple of the nonCoherentAtomSize
+    u64 aligned_uniforms_offset = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
+    u64 aligned_frame_data_size = ((aligned_uniforms_offset + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
     buffer_create_info.size = aligned_frame_data_size * MAX_FRAME_RESOURCES;
     buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.frame_resources_buffer, &renderer.frame_resources_memory_block);
@@ -749,12 +751,22 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         renderer.frame_resources[i].draw_call_count_offset = i * renderer.frame_resources[i].data_memory_size;
         renderer.frame_resources[i].draw_command_offset = renderer.frame_resources[i].draw_call_count_offset + sizeof(u32);
         renderer.frame_resources[i].draw_instance_offset = renderer.frame_resources[i].draw_command_offset + DRAW_CALLS_MEMORY_SIZE - sizeof(u32);
-        renderer.frame_resources[i].uniforms_offset = renderer.frame_resources[i].draw_instance_offset + DRAW_INSTANCE_MEMORY_SIZE;
+        renderer.frame_resources[i].uniforms_offset = renderer.frame_resources[i].draw_instance_offset + (aligned_uniforms_offset - DRAW_CALLS_MEMORY_SIZE);
 
         renderer.frame_resources[i].draw_call_count = (u32*)(renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_call_count_offset);
         renderer.frame_resources[i].draw_command_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_command_offset, DRAW_CALLS_MEMORY_SIZE - sizeof(u32)};
         renderer.frame_resources[i].draw_instance_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_instance_offset, DRAW_INSTANCE_MEMORY_SIZE};
         renderer.frame_resources[i].uniforms = (Frame_Uniforms*)(renderer.frame_resources_memory_block.base + renderer.frame_resources[i].uniforms_offset);
+
+        VkDescriptorBufferInfo buffer_info = {renderer.frame_resources_buffer, renderer.frame_resources[i].uniforms_offset, sizeof(Frame_Uniforms)};
+        VkWriteDescriptorSet uniform_write = {};
+        uniform_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        uniform_write.dstSet = renderer.frame_resources[i].descriptor_set;
+        uniform_write.dstBinding = 0;
+        uniform_write.descriptorCount = 1;
+        uniform_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uniform_write.pBufferInfo = &buffer_info;
+        vkUpdateDescriptorSets(vulkan_context.device, 1, &uniform_write, 0, NULL);
     }
 
     // TODO: Remove this test code
@@ -1359,6 +1371,11 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
 
     renderer.current_render_frame->draw_instance_count = 0;
     memory_arena_reset(&renderer.current_render_frame->draw_instance_arena);
+
+    renderer.current_render_frame->uniforms->view_projection = {1, 0, 0, 0,
+                                                                0, 1, 0, 0,
+                                                                0, 0, 1, 0,
+                                                                0, 0, 0, 1};
 }
 
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)
@@ -1397,12 +1414,22 @@ void renderer_end_frame()
 {
     assert(renderer.current_render_frame);
 
-    VkMappedMemoryRange range = {};
-    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = renderer.frame_resources_memory_block.device_memory;
-    range.offset = renderer.current_render_frame->draw_call_count_offset;
-    range.size = renderer.current_render_frame->data_memory_size;
-    VK_CALL(vkFlushMappedMemoryRanges(vulkan_context.device, 1, &range));
+    VkMappedMemoryRange draw_calls_range = {};
+    draw_calls_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    draw_calls_range.memory = renderer.frame_resources_memory_block.device_memory;
+    draw_calls_range.offset = renderer.current_render_frame->draw_call_count_offset;
+    draw_calls_range.size = ((sizeof(u32) + renderer.current_render_frame->draw_command_arena.used) + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize - 1) & -(s64)vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+
+    VkMappedMemoryRange draw_instance_range = draw_calls_range;
+    draw_instance_range.offset = renderer.current_render_frame->draw_instance_offset - renderer.current_render_frame->draw_instance_offset % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+    draw_instance_range.size = (renderer.current_render_frame->draw_instance_arena.used + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize - 1) & -(s64)vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+
+    VkMappedMemoryRange frame_uniforms_range = draw_calls_range;
+    frame_uniforms_range.offset = renderer.current_render_frame->uniforms_offset;
+    frame_uniforms_range.size = (sizeof(Frame_Uniforms) + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize - 1) & -(s64)vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+
+    VkMappedMemoryRange memory_ranges[] = {draw_calls_range, draw_instance_range, frame_uniforms_range};
+    VK_CALL(vkFlushMappedMemoryRanges(vulkan_context.device, array_count(memory_ranges), memory_ranges));
 }
 
 void renderer_submit_frame(Frame_Parameters* frame_params)
@@ -1434,8 +1461,9 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
         vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
-        vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, 1, &renderer.descriptor_set, 0, NULL);
-        //vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 1, 1, &frame_resources->descriptor_set, 0, NULL);
+
+        VkDescriptorSet descriptor_sets[] = {renderer.descriptor_set, frame_resources->descriptor_set};
+        vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
         VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
         vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);

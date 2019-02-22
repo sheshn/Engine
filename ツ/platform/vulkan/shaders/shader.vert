@@ -34,7 +34,13 @@ struct Transform
     m4x4 model;
 };
 
+struct Frame_Uniforms
+{
+    m4x4 view_projection;
+};
+
 layout(set = 0, binding = 2) buffer storage_64_buffer { Data_64 storage_64[]; };
+layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
 layout(location = 0) in uv2 in_instance_data;
 layout(location = 1) in v4 in_position;
@@ -61,7 +67,7 @@ void main()
 {
     Transform xform = data64_to_xform(storage_64[in_instance_data.x]);
 
-    v4 position = xform.model * v4(in_position.xyz, 1.0);
+    v4 position = frame_uniforms.view_projection * xform.model * v4(in_position.xyz, 1.0);
     gl_Position = v4(position.xy, 0.0, 1.0);
 
     out_instance_data = in_instance_data;

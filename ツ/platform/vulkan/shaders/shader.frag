@@ -34,9 +34,15 @@ struct Transform
     m4x4 model;
 };
 
+struct Frame_Uniforms
+{
+    m4x4 view_projection;
+};
+
 layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
 layout(set = 0, binding = 1) uniform texture2D textures_2d[];
 layout(set = 0, binding = 2) buffer storage_64_buffer { Data_64 storage_64[]; };
+layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
 layout(location = 0) flat in uv2 in_instance_data;
 layout(location = 1) in vec2 in_uv;
