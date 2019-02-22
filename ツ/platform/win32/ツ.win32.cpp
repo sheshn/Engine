@@ -126,8 +126,12 @@ JOB_ENTRY_POINT(render_entry_point)
         Renderer_Buffer xform2 = renderer_create_buffer_reference(2);
         Renderer_Buffer material2 = renderer_create_buffer_reference(3);
         renderer_begin_frame(frame_params);
-        renderer_draw_buffer(buffer, 64 * 4, 6, material, xform);
-        renderer_draw_buffer(buffer, 64 * 4, 6, material2, xform2);
+
+        Renderer_Material materials[] = {material, material2};
+        Renderer_Transform transforms[] = {xform, xform2};
+        renderer_draw_buffer(buffer, 64 * 4, 6, 2, materials, transforms);
+        //renderer_draw_buffer(buffer, 64 * 4, 6, material, xform);
+        //renderer_draw_buffer(buffer, 64 * 4, 6, material2, xform2);
         renderer_end_frame();
     }
     // printf("RENDER %lld\n", frame_params->frame_number);

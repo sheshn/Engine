@@ -16,9 +16,30 @@ struct Renderer_Texture
     u16 height;
 };
 
+typedef Renderer_Buffer Renderer_Material;
+typedef Renderer_Buffer Renderer_Transform;
+
 struct Vertex
 {
     v4 position;
+};
+
+struct Material
+{
+    Renderer_Texture albedo;
+    Renderer_Texture normal;
+    Renderer_Texture roughness;
+    Renderer_Texture metallic;
+
+    v4 base_color;
+};
+
+struct Transform
+{
+    v3    position;
+    float scale;
+    quat  rotation;
+    m4x4  model;
 };
 
 #define MAX_TRANSFER_OPERATIONS 256
@@ -27,7 +48,9 @@ enum Renderer_Transfer_Operation_Type
 {
     RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER,
     RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER,
-    RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE
+    RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE,
+    RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL,
+    RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM
 };
 
 enum Renderer_Transfer_Operation_State
@@ -45,8 +68,10 @@ struct Renderer_Transfer_Operation
 
     union
     {
-        Renderer_Buffer  buffer;
-        Renderer_Texture texture;
+        Renderer_Buffer    buffer;
+        Renderer_Texture   texture;
+        Renderer_Material  material;
+        Renderer_Transform transform;
     };
 
     u8* memory;
@@ -76,7 +101,8 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* 
 void renderer_queue_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation* operation);
 
 void renderer_begin_frame(Frame_Parameters* frame_params);
-void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform);
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Material material, Renderer_Transform xform);
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, u32 instance_count, Renderer_Material* materials, Renderer_Transform* xforms);
 void renderer_end_frame();
 
 void renderer_submit_frame(Frame_Parameters* frame_params);

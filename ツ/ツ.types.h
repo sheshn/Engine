@@ -52,3 +52,22 @@ struct v4
         struct { float r, g, b, a; };
     };
 };
+
+struct quat
+{
+    union
+    {
+        float data[4];
+
+        struct { float x, y, z, w; };
+    };
+};
+
+struct m4x4
+{
+    union
+    {
+        float data[16];
+        v4    columns[4];
+    };
+};

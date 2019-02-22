@@ -187,6 +187,11 @@ struct Draw_Instance_Data
     u32 material_index;
 };
 
+struct Frame_Uniforms
+{
+    m4x4 view_projection;
+};
+
 #define MAX_2D_TEXTURES          2048
 #define MAX_DRAW_CALLS_PER_FRAME 16384
 #define MAX_INSTANCES_PER_FRAME  (MAX_DRAW_CALLS_PER_FRAME * 2)
@@ -195,8 +200,10 @@ struct Draw_Instance_Data
 #define MESH_MEMORY_SIZE          megabytes(256)
 #define STORAGE_64_MEMORY_SIZE    megabytes(256)
 #define TEXTURE_MEMORY_SIZE       megabytes(256)
-#define DRAW_CALLS_MEMORY_SIZE    (MAX_FRAME_RESOURCES * MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
-#define DRAW_INSTANCE_MEMORY_SIZE (MAX_FRAME_RESOURCES * MAX_INSTANCES_PER_FRAME * sizeof(Draw_Instance_Data))
+
+#define DRAW_CALLS_MEMORY_SIZE     (MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
+#define DRAW_INSTANCE_MEMORY_SIZE  (MAX_INSTANCES_PER_FRAME * sizeof(Draw_Instance_Data))
+#define FRAME_UNIFORMS_MEMORY_SIZE (sizeof(Frame_Uniforms))
 
 struct Frame_Resources
 {
@@ -212,9 +219,19 @@ struct Frame_Resources
 
     Memory_Arena draw_command_arena;
     u32*         draw_call_count;
+    u64          draw_command_offset;
+    u64          draw_call_count_offset;
 
     Memory_Arena draw_instance_arena;
     u32          draw_instance_count;
+    u64          draw_instance_offset;
+
+    Frame_Uniforms* uniforms;
+    u64             uniforms_offset;
+
+    // NOTE: This is the total space the draw commands, instances, and uniforms take.
+    // (Including extra padding to align to the nonCoherentAtomSize)
+    u64 data_memory_size;
 };
 
 struct Renderer
@@ -233,11 +250,8 @@ struct Renderer
     VkCommandBuffer         transfer_command_buffer;
     VkFence                 transfer_command_buffer_fence;
 
-    Vulkan_Memory_Block draw_memory_block;
-    VkBuffer            draw_buffer;
-
-    Vulkan_Memory_Block draw_instance_memory_block;
-    VkBuffer            draw_instance_buffer;
+    Vulkan_Memory_Block frame_resources_memory_block;
+    VkBuffer            frame_resources_buffer;
 
     Vulkan_Memory_Block mesh_memory_block;
     VkBuffer            mesh_buffer;
@@ -255,7 +269,7 @@ struct Renderer
     u32       max_2d_textures;
 
     Vulkan_Buffer*  mesh_buffers;
-    Vulkan_Buffer*  storage_64_buffers;
+    Vulkan_Buffer*  storage_64_buffers; // TODO: Separate Material and Transform
     Vulkan_Texture* textures;
 
     VkDescriptorSetLayout static_descriptor_set_layout;
@@ -640,14 +654,10 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     // TODO: Replace with HOST_CACHED
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
 
-    buffer_create_info.size = DRAW_CALLS_MEMORY_SIZE;
-    buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.draw_buffer, &renderer.draw_memory_block);
-
-    // TODO: Replace with HOST_CACHED
-    buffer_create_info.size = DRAW_INSTANCE_MEMORY_SIZE;
-    buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.draw_instance_buffer, &renderer.draw_instance_memory_block);
+    u64 aligned_frame_data_size = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize - 1) & -(s64)vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+    buffer_create_info.size = aligned_frame_data_size * MAX_FRAME_RESOURCES;
+    buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.frame_resources_buffer, &renderer.frame_resources_memory_block);
 
     renderer.mesh_buffer_used = 0;
     buffer_create_info.size = MESH_MEMORY_SIZE;
@@ -725,14 +735,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkSemaphoreCreateInfo semaphore_create_info = {};
     semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    // NOTE: Make sure per frame draw buffers are aligned to the non coherent atom size since we are using HOST_CACHED memory.
-    // We are subtracting the size of the buffer if we are not a multiple of the correct alignment.
-    // This means MAX_DRAW_CALLS_PER_FRAME is technically not correct (it is actually less).
-    u64 per_frame_draw_buffer_size = DRAW_CALLS_MEMORY_SIZE / MAX_FRAME_RESOURCES;
-    per_frame_draw_buffer_size = (per_frame_draw_buffer_size - 1) - ((per_frame_draw_buffer_size - 1) % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize);
-
-    u64 draw_instance_buffer_size = DRAW_INSTANCE_MEMORY_SIZE / MAX_FRAME_RESOURCES;
-
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
         VK_CALL(vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].image_available_semaphore));
@@ -742,9 +744,17 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
         renderer.frame_resources[i].should_record_command_buffer = true;
 
-        renderer.frame_resources[i].draw_call_count = (u32*)(renderer.draw_memory_block.base + i * per_frame_draw_buffer_size);
-        renderer.frame_resources[i].draw_command_arena = {((u8*)renderer.frame_resources[i].draw_call_count + sizeof(u32)), per_frame_draw_buffer_size - sizeof(u32)};
-        renderer.frame_resources[i].draw_instance_arena = {(u8*)(renderer.draw_instance_memory_block.base + i * draw_instance_buffer_size), draw_instance_buffer_size};
+        // NOTE: Layout of frame_resources_buffer is [DRAW_INDIRECT_COUNT | DRAW_INDIRECT_COMMANDS | DRAW_INSTANCE_DATA | FRAME_UNIFORM_DATA] * MAX_FRAME_RESOURCES
+        renderer.frame_resources[i].data_memory_size = aligned_frame_data_size;
+        renderer.frame_resources[i].draw_call_count_offset = i * renderer.frame_resources[i].data_memory_size;
+        renderer.frame_resources[i].draw_command_offset = renderer.frame_resources[i].draw_call_count_offset + sizeof(u32);
+        renderer.frame_resources[i].draw_instance_offset = renderer.frame_resources[i].draw_command_offset + DRAW_CALLS_MEMORY_SIZE - sizeof(u32);
+        renderer.frame_resources[i].uniforms_offset = renderer.frame_resources[i].draw_instance_offset + DRAW_INSTANCE_MEMORY_SIZE;
+
+        renderer.frame_resources[i].draw_call_count = (u32*)(renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_call_count_offset);
+        renderer.frame_resources[i].draw_command_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_command_offset, DRAW_CALLS_MEMORY_SIZE - sizeof(u32)};
+        renderer.frame_resources[i].draw_instance_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_instance_offset, DRAW_INSTANCE_MEMORY_SIZE};
+        renderer.frame_resources[i].uniforms = (Frame_Uniforms*)(renderer.frame_resources_memory_block.base + renderer.frame_resources[i].uniforms_offset);
     }
 
     // TODO: Remove this test code
@@ -1353,29 +1363,34 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
 
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)
 {
-    assert(renderer.current_render_frame);
+    renderer_draw_buffer(buffer, index_offset, index_count, 1, &material, &xform);
+}
 
-    u32 current_draw_call_count = *renderer.current_render_frame->draw_call_count;
-    // TODO: Remove this? (assert should be caught by memory_arena_reserve). Think about whether MAX_DRAW_CALLS_PER_FRAME should be a thing.
-    assert(current_draw_call_count < MAX_DRAW_CALLS_PER_FRAME);
+void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, u32 instance_count, Renderer_Material* materials, Renderer_Transform* xforms)
+{
+    assert(renderer.current_render_frame);
+    assert(*renderer.current_render_frame->draw_call_count < MAX_DRAW_CALLS_PER_FRAME);
     assert(renderer.current_render_frame->draw_instance_count < MAX_INSTANCES_PER_FRAME);
-    *renderer.current_render_frame->draw_call_count = current_draw_call_count + 1;
+
+    (*renderer.current_render_frame->draw_call_count)++;
 
     // NOTE: The vertices and indices are in the same buffer.
     // We must use UINT32 as the index type, which is the same size as a float, otherwise we wouldn't know where the first index is!
     // We could separate the vertex and index buffer. Leaving it for now since we probably want to use UINT32 anyways.
     VkDrawIndexedIndirectCommand* draw_command = (VkDrawIndexedIndirectCommand*)memory_arena_reserve(&renderer.current_render_frame->draw_command_arena, sizeof(VkDrawIndexedIndirectCommand));
     draw_command->indexCount = index_count;
-    draw_command->instanceCount = 1;
+    draw_command->instanceCount = instance_count;
     draw_command->vertexOffset = renderer.mesh_buffers[buffer.id].offset;
     draw_command->firstIndex = (draw_command->vertexOffset + index_offset) / sizeof(u32) / sizeof(u32);
     draw_command->firstInstance = renderer.current_render_frame->draw_instance_count;
 
-    // TODO: Support instancing
-    Draw_Instance_Data* instance_data = (Draw_Instance_Data*)memory_arena_reserve(&renderer.current_render_frame->draw_instance_arena, sizeof(Draw_Instance_Data));
-    instance_data->xform_index = xform.id;
-    instance_data->material_index = material.id;
-    renderer.current_render_frame->draw_instance_count++;
+    for (u32 i = 0; i < instance_count; ++i)
+    {
+        Draw_Instance_Data* instance_data = (Draw_Instance_Data*)memory_arena_reserve(&renderer.current_render_frame->draw_instance_arena, sizeof(Draw_Instance_Data));
+        instance_data->xform_index = xforms[i].id;
+        instance_data->material_index = materials[i].id;
+    }
+    renderer.current_render_frame->draw_instance_count += instance_count;
 }
 
 void renderer_end_frame()
@@ -1384,10 +1399,9 @@ void renderer_end_frame()
 
     VkMappedMemoryRange range = {};
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = renderer.draw_memory_block.device_memory;
-    range.offset = (u8*)renderer.current_render_frame->draw_call_count - renderer.draw_memory_block.base;
-    range.size = *renderer.current_render_frame->draw_call_count * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32);
-    range.size = (range.size - 1) - ((range.size - 1) % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize) + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+    range.memory = renderer.frame_resources_memory_block.device_memory;
+    range.offset = renderer.current_render_frame->draw_call_count_offset;
+    range.size = renderer.current_render_frame->data_memory_size;
     VK_CALL(vkFlushMappedMemoryRanges(vulkan_context.device, 1, &range));
 }
 
@@ -1429,12 +1443,12 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
         vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
 
-        VkDeviceSize offsets[] = {(u64)(frame_resources->draw_instance_arena.base - renderer.draw_instance_memory_block.base), 0};
-        VkBuffer buffers[] = {renderer.draw_instance_buffer, renderer.mesh_buffer};
+        VkDeviceSize offsets[] = {frame_resources->draw_instance_offset, 0};
+        VkBuffer buffers[] = {renderer.frame_resources_buffer, renderer.mesh_buffer};
 
         vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, array_count(buffers), buffers, offsets);
         vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base + sizeof(u32)), renderer.draw_buffer, ((u8*)frame_resources->draw_call_count - renderer.draw_memory_block.base), MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+        vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
 
         vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
         VK_CALL(vkEndCommandBuffer(frame_resources->graphics_command_buffer));
