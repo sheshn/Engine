@@ -437,7 +437,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.present_queue_index, 0, &vulkan_context.present_queue);
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.transfer_queue_index, (vulkan_context.transfer_queue_index == vulkan_context.graphics_queue_index || vulkan_context.transfer_queue_index == vulkan_context.present_queue_index) && separate_transfer_queue ? 1 : 0, &vulkan_context.transfer_queue);
 
-    // NOTE: Recreate swapchain to initialize it the first time
     recreate_swapchain(window_width, window_height);
 
     renderer.max_2d_textures = min(MAX_2D_TEXTURES, vulkan_context.physical_device_properties.limits.maxPerStageDescriptorSampledImages);
@@ -476,9 +475,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     storage_64_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_64_layout_binding};
-
-    // NOTE: VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT allows binding the entire texture_2d array even if we don't use renderer.max_2d_textures
-    // Without this, the validation layer complains.
     VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT, 0};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
@@ -627,11 +623,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkPipelineShaderStageCreateInfo shader_stages[] = {vertex_stage_create_info, fragment_stage_create_info};
 
-    // NOTE: We are using the swapchain render pass created earlier.
-    // There is a chance the render pass needs to be recreated (which we aren't doing).
-    // In that case, the pipeline would probably need to be recreated as well.
-    // However, the pipeline just needs to be compatible with other render passes,
-    // so we are probably fine (the render pass won't change anyways).
     VkGraphicsPipelineCreateInfo pipeline_create_info = {};
     pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipeline_create_info.stageCount = 2;
@@ -896,7 +887,6 @@ internal void recreate_swapchain(u32 width, u32 height)
 
     VkSurfaceFormatKHR* surface_formats = memory_arena_reserve_array(vulkan_context.memory_arena, VkSurfaceFormatKHR, format_count);
     VK_CALL(vkGetPhysicalDeviceSurfaceFormatsKHR(vulkan_context.physical_device, vulkan_context.surface, &format_count, surface_formats));
-    assert(format_count != 0);
 
     u32 present_mode_count = 0;
     VK_CALL(vkGetPhysicalDeviceSurfacePresentModesKHR(vulkan_context.physical_device, vulkan_context.surface, &present_mode_count, NULL));
@@ -904,7 +894,6 @@ internal void recreate_swapchain(u32 width, u32 height)
 
     VkPresentModeKHR* present_modes = memory_arena_reserve_array(vulkan_context.memory_arena, VkPresentModeKHR, present_mode_count);
     VK_CALL(vkGetPhysicalDeviceSurfacePresentModesKHR(vulkan_context.physical_device, vulkan_context.surface, &present_mode_count, present_modes));
-    assert(present_mode_count != 0);
 
     u32 image_count = min(surface_capabilities.minImageCount + 1, MAX_SWAPCHAIN_IMAGES);
     if (surface_capabilities.maxImageCount > 0 && image_count > surface_capabilities.maxImageCount)
@@ -986,9 +975,6 @@ internal void recreate_swapchain(u32 width, u32 height)
     vulkan_context.swapchain_image_count = min(image_count, MAX_SWAPCHAIN_IMAGES);
     vkGetSwapchainImagesKHR(vulkan_context.device, vulkan_context.swapchain, &image_count, &vulkan_context.swapchain_images[0]);
 
-    // NOTE: We are currently recreating the render pass when the swapchain is recreated.
-    // This may not be necessary since the only parameter the render pass needs is the
-    // swapchain's surface format (which will likely always be the same).
     VkAttachmentDescription color_attachment = {};
     color_attachment.format = vulkan_context.surface_format.format;
     color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1406,7 +1392,7 @@ void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_co
     draw_command->indexCount = index_count;
     draw_command->instanceCount = instance_count;
     draw_command->vertexOffset = renderer.mesh_buffers[buffer.id].offset;
-    draw_command->firstIndex = (draw_command->vertexOffset + index_offset) / sizeof(u32) / sizeof(u32);
+    draw_command->firstIndex = (draw_command->vertexOffset + index_offset) / sizeof(u32) / sizeof(u32); // TODO: This is probably wrong!
     draw_command->firstInstance = renderer.current_render_frame->draw_instance_count;
 
     for (u32 i = 0; i < instance_count; ++i)
@@ -1423,6 +1409,8 @@ void renderer_end_frame()
     assert(renderer.current_render_frame);
 
     // NOTE: Flush all memory used by the frame (aligning size/offset to nonCoherentAtomSize).
+    // Draw call count offset and frame uniforms offset are aligned to minUniformBufferOffsetAlignment already.
+    // (minUniformBufferOffsetAlignment should be a multiple of nonCoherentAtomSize)
     VkMappedMemoryRange draw_calls_range = {};
     draw_calls_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     draw_calls_range.memory = renderer.frame_resources_memory_block.device_memory;
@@ -1445,12 +1433,12 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 {
     Frame_Resources* frame_resources = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
 
+    // TODO: Is this the best place to resolve the transfer operations?
     resolve_pending_transfer_operations();
 
     wait_for_fences(&frame_resources->graphics_command_buffer_fence, 1);
     vkResetFences(vulkan_context.device, 1, &frame_resources->graphics_command_buffer_fence);
 
-    // TODO: Use prerecorded secondary command buffers?
     if (frame_resources->should_record_command_buffer)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {};
@@ -1474,7 +1462,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         VkDescriptorSet descriptor_sets[] = {renderer.descriptor_set, frame_resources->descriptor_set};
         vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
-        VkViewport viewport = {0.0f, 0.0f, (float)vulkan_context.swapchain_extent.width, (float)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
+        VkViewport viewport = {0.0f, 0.0f, (f32)vulkan_context.swapchain_extent.width, (f32)vulkan_context.swapchain_extent.height, 0.0f, 1.0f};
         vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
         VkRect2D scissor = {{0, 0}, vulkan_context.swapchain_extent};
@@ -1540,7 +1528,6 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
 void renderer_resize(u32 window_width, u32 window_height)
 {
-    // NOTE: Vulkan needs to be initialized
     if (vulkan_context.device == NULL || vulkan_context.surface == NULL)
     {
         return;

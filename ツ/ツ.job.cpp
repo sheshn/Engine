@@ -167,10 +167,10 @@ struct Job_Scheduler_Thread
     volatile u32*         previous_fiber_list_lock;
 };
 
-#define MAX_THREAD_COUNT  16
+#define MAX_THREAD_COUNT 16
 #define MAX_QUEUE_COUNT  (JOB_PRIORITY_HIGH + 1)
-#define MAX_FIBER_COUNT   256
-#define FIBER_STACK_SIZE (64 * 1024 * 1024)
+#define MAX_FIBER_COUNT  256
+#define FIBER_STACK_SIZE kilobytes(64)
 
 #define MAX_DEDICATED_THREAD_COUNT 4
 
@@ -331,9 +331,6 @@ FIBER_PROC(fiber_proc)
             !dequeue_job(&scheduler.queues[JOB_PRIORITY_MEDIUM], &job) &&
             !dequeue_job(&scheduler.queues[JOB_PRIORITY_LOW], &job))
         {
-            // TODO: Fix this. If all threads are asleep, no threads will ever wake up!
-            // But we also want to sleep if there is no work to be done!
-            // It works now, but might fail in the future. Or maybe it's already not working properly!
             semaphore_wait(scheduler.semaphore_handle);
         }
         else
@@ -341,6 +338,9 @@ FIBER_PROC(fiber_proc)
             scheduler_thread->current_fiber->job_counter = job.counter;
             job.entry_point(job.data);
             atomic_decrement(job.counter);
+
+            // NOTE: Wake up all threads!
+            semaphore_signal(scheduler.semaphore_handle);
         }
     }
 }
@@ -368,6 +368,10 @@ THREAD_PROC(dedicated_thread_proc)
         {
             job.entry_point(job.data);
             atomic_decrement(job.counter);
+
+            // TODO: We may want to wake up the dedicated threads as well.
+            // Seems to work without doing that (for now)!
+            semaphore_signal(scheduler.semaphore_handle);
         }
     }
 }
