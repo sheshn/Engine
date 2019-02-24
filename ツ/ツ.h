@@ -2,6 +2,31 @@
 
 #include "ツ.common.h"
 
+struct Camera
+{
+    v3   position;
+    quat rotation;
+    m4x4 projection;
+    m4x4 view;
+};
+
+struct Input_Button_State
+{
+    b32 is_down;
+    b32 is_pressed;
+};
+
+struct Input
+{
+    Input_Button_State button_up;
+    Input_Button_State button_down;
+    Input_Button_State button_left;
+    Input_Button_State button_right;
+
+    v3 mouse_position;
+    v3 mouse_delta;
+};
+
 struct Frame_Parameters
 {
     Frame_Parameters* next;
@@ -14,4 +39,12 @@ struct Frame_Parameters
 
     u64 start_time;
     u64 end_time;
+
+    Input input;
+
+    Camera camera;
 };
+
+void game_update(Frame_Parameters* frame_params);
+void game_render(Frame_Parameters* frame_params);
+void game_gpu(Frame_Parameters* frame_params);

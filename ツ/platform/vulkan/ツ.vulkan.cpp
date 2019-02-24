@@ -651,7 +651,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     // TODO: Replace with HOST_CACHED
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
 
-    // NOTE: Assuming that the minUniformBufferOffsetAlignment is a multiple of the nonCoherentAtomSize
     u64 aligned_uniforms_offset = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
     u64 aligned_frame_data_size = ((aligned_uniforms_offset + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
     buffer_create_info.size = aligned_frame_data_size * MAX_FRAME_RESOURCES;
@@ -1366,10 +1365,7 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     renderer.current_render_frame->draw_instance_count = 0;
     memory_arena_reset(&renderer.current_render_frame->draw_instance_arena);
 
-    renderer.current_render_frame->uniforms->view_projection = {1, 0, 0, 0,
-                                                                0, 1, 0, 0,
-                                                                0, 0, 1, 0,
-                                                                0, 0, 0, 1};
+    renderer.current_render_frame->uniforms->view_projection = frame_params->camera.projection * frame_params->camera.view;
 }
 
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)

@@ -1,3 +1,4 @@
+// TODO: Remove use of C runtime library!
 #include <stdio.h>
 
 #define WIN32_LEAN_AND_MEAN
@@ -5,6 +6,7 @@
 #include <windows.h>
 
 #include "../../ツ.platform.h"
+#include "../../ツ.math.h"
 
 // NOTE: Unity build
 #include "../../ツ.job.cpp"
@@ -12,6 +14,7 @@
 #include "../vulkan/win32/ツ.vulkan.win32.cpp"
 #include "../vulkan/ツ.vulkan.cpp"
 #include "../../ツ.asset.cpp"
+#include "../../ツ.cpp"
 
 #define MAX_FRAMES 16
 
@@ -92,6 +95,50 @@ HWND create_window()
     return CreateWindowEx(0, window_class.lpszClassName, "Engine", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, window_width, window_height, 0, 0, window_class.hInstance, NULL);
 }
 
+void process_window_messages(HWND window_handle, Frame_Parameters* frame_params)
+{
+    MSG message;
+    while (PeekMessage(&message, window_handle, 0, 0, PM_REMOVE))
+    {
+        switch (message.message)
+        {
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        {
+            u64 keycode = message.wParam;
+            b32 key_was_down = (message.lParam & (1 << 30)) != 0;
+            b32 key_is_down = (message.lParam & (1 << 31)) == 0;
+
+            switch (keycode)
+            {
+            case VK_UP:
+            case 'W':
+                frame_params->input.button_up = {key_is_down, key_was_down && !key_is_down};
+                break;
+            case VK_LEFT:
+            case 'A':
+                frame_params->input.button_left = {key_is_down, key_was_down && !key_is_down};
+                break;
+            case VK_DOWN:
+            case 'S':
+                frame_params->input.button_down = {key_is_down, key_was_down && !key_is_down};
+                break;
+            case VK_RIGHT:
+            case 'D':
+                frame_params->input.button_right = {key_is_down, key_was_down && !key_is_down};
+                break;
+            };
+        } break;
+        default:
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+            break;
+        }
+    }
+}
+
 JOB_ENTRY_POINT(game_entry_point)
 {
     Frame_Parameters* frame_params = (Frame_Parameters*)data;
@@ -105,7 +152,7 @@ JOB_ENTRY_POINT(game_entry_point)
     QueryPerformanceCounter(&start_counter);
     frame_params->start_time = start_counter.QuadPart;
 
-    // printf("GAME %lld\n", frame_params->frame_number);
+    game_update(frame_params);
 }
 
 JOB_ENTRY_POINT(render_entry_point)
@@ -121,24 +168,7 @@ JOB_ENTRY_POINT(render_entry_point)
         wait_for_counter(&frame_params->previous->render_counter, 0);
     }
 
-    // TODO: Remove this test code
-    renderer_begin_frame(frame_params);
-    if (frame_params->frame_number > 3)
-    {
-        Renderer_Buffer buffer = renderer_create_buffer_reference(0);
-        Renderer_Buffer xform = renderer_create_buffer_reference(0);
-        Renderer_Buffer material = renderer_create_buffer_reference(1);
-        Renderer_Buffer xform2 = renderer_create_buffer_reference(2);
-        Renderer_Buffer material2 = renderer_create_buffer_reference(3);
-
-        Renderer_Material materials[] = {material, material2};
-        Renderer_Transform transforms[] = {xform, xform2};
-        renderer_draw_buffer(buffer, 64 * 4, 6, 2, materials, transforms);
-        //renderer_draw_buffer(buffer, 64 * 4, 6, material, xform);
-        //renderer_draw_buffer(buffer, 64 * 4, 6, material2, xform2);
-    }
-    renderer_end_frame();
-    // printf("RENDER %lld\n", frame_params->frame_number);
+    game_render(frame_params);
 }
 
 JOB_ENTRY_POINT(gpu_entry_point)
@@ -154,7 +184,7 @@ JOB_ENTRY_POINT(gpu_entry_point)
         wait_for_counter(&frame_params->previous->gpu_counter, 0);
     }
 
-    renderer_submit_frame(frame_params);
+    game_gpu(frame_params);
 
     LARGE_INTEGER end_counter;
     QueryPerformanceCounter(&end_counter);
@@ -192,7 +222,7 @@ int main()
         return 1;
     }
 
-    Frame_Parameters frames[MAX_FRAMES];
+    Frame_Parameters frames[MAX_FRAMES] = {};
     for (u64 i = 0; i < MAX_FRAMES; ++i)
     {
         frames[i].next = &frames[(i + 1) % MAX_FRAMES];
@@ -201,6 +231,8 @@ int main()
 
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
+    current_frame->camera.projection = perspective_infinite(radians(80), 4.0f/3.0f, 0.1f);
+    current_frame->camera.view = identity();
 
     LARGE_INTEGER performance_frequency;
     QueryPerformanceFrequency(&performance_frequency);
@@ -208,12 +240,8 @@ int main()
     running = true;
     while (running)
     {
-        MSG message;
-        while (PeekMessage(&message, window_handle, 0, 0, PM_REMOVE))
-        {
-            TranslateMessage(&message);
-            DispatchMessage(&message);
-        }
+        current_frame->input = {};
+        process_window_messages(window_handle, current_frame);
 
         current_frame->next->frame_number = current_frame->frame_number + 1;
         current_frame->game_counter = 1;
@@ -237,6 +265,8 @@ int main()
                 printf("ms per frame: %f, fps: %f\n", ms_per_frame, fps);
             }
         }
+
+        current_frame->camera = current_frame->previous->camera;
     }
 
     return 0;

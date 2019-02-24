@@ -20,54 +20,39 @@ typedef u32      b32;
 #define U32_MAX 0xFFFFFFFF
 #define U64_MAX 0xFFFFFFFFFFFFFFFFUL
 
-struct v2
+union v2
 {
-    union
-    {
-        float data[2];
+    float data[2];
 
-        struct { float x, y; };
-        struct { float u, v; };
-    };
+    struct { float x, y; };
+    struct { float u, v; };
 };
 
-struct v3
+union v3
 {
-    union
-    {
-        float data[3];
+    float data[3];
 
-        struct { float x, y, z; };
-        struct { float r, g, b; };
-    };
+    struct { float x, y, z; };
+    struct { float r, g, b; };
 };
 
-struct v4
+union v4
 {
-    union
-    {
-        float data[4];
+    float data[4];
 
-        struct { float x, y, z, w; };
-        struct { float r, g, b, a; };
-    };
+    struct { float x, y, z, w; };
+    struct { float r, g, b, a; };
 };
 
-struct quat
+union quat
 {
-    union
-    {
-        float data[4];
+    float data[4];
 
-        struct { float x, y, z, w; };
-    };
+    struct { float x, y, z, w; };
 };
 
-struct m4x4
+union m4x4
 {
-    union
-    {
-        float data[16];
-        v4    columns[4];
-    };
+    float data[16];
+    v4    columns[4];
 };
