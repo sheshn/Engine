@@ -25,11 +25,29 @@ struct Thread
     #define create_semaphore(max_count) (void*)CreateSemaphore(NULL, (max_count), (max_count), NULL)
     #define semaphore_signal(semaphore_handle) ReleaseSemaphore((semaphore_handle), 1, NULL)
     #define semaphore_wait(semaphore_handle) WaitForSingleObject((semaphore_handle), INFINITE)
-    #define create_suspended_thread(thread_proc, data) (void*)CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(thread_proc), (data), CREATE_SUSPENDED, NULL)
+    #define create_suspended_thread(thread_proc, data) (void*)CreateThread(NULL, 1024 * 1024, (LPTHREAD_START_ROUTINE)(thread_proc), (data), CREATE_SUSPENDED, NULL)
     #define resume_thread(thread_handle) ResumeThread((HANDLE)(thread_handle))
     #define bind_thread_to_core(thread_handle, core) SetThreadAffinityMask((thread_handle) ? (HANDLE)(thread_handle) : GetCurrentThread(), (u64)1 << (core))
     #define convert_thread_to_fiber() ConvertThreadToFiber(NULL)
     #define switch_fiber(current, next) SwitchToFiber((next)->handle)
+
+    internal DWORD thread_local_storage_index;
+
+    internal void init_thread_local_storage()
+    {
+        thread_local_storage_index = TlsAlloc();
+        assert(thread_local_storage_index != TLS_OUT_OF_INDEXES);
+    }
+
+    internal void thread_local_storage_set(LPVOID value)
+    {
+        TlsSetValue(thread_local_storage_index, value);
+    }
+
+    internal LPVOID thread_local_storage_get()
+    {
+        return TlsGetValue(thread_local_storage_index);
+    }
 
     internal void init_fiber(Fiber* fiber, void* fiber_proc, void* data)
     {
@@ -42,7 +60,7 @@ struct Thread
         if (!fiber->handle)
         {
             // TODO: Logging
-            printf("Unable to create fiber!\n");
+            // printf("Unable to create fiber!\n");
         }
     };
 #elif defined(__APPLE__) && defined(__MACH__)
@@ -181,13 +199,13 @@ struct Job_Scheduler
     Job_Scheduler_Fiber  fibers[MAX_FIBER_COUNT];
 
     u32 thread_count;
-    u32 current_fiber_index = 0;
+    u32 current_fiber_index;
 
-    Job_Scheduler_Fiber* fibers_free_list      = NULL;
-    volatile u32         fibers_free_list_lock = 0;
+    Job_Scheduler_Fiber* fibers_free_list;
+    volatile u32         fibers_free_list_lock;
 
-    Job_Scheduler_Fiber* fibers_wait_list      = NULL;
-    volatile u32         fibers_wait_list_lock = 0;
+    Job_Scheduler_Fiber* fibers_wait_list;
+    volatile u32         fibers_wait_list_lock;
 
     void* semaphore_handle;
 
@@ -200,7 +218,6 @@ struct Job_Scheduler
 };
 
 internal Job_Scheduler scheduler;
-internal thread_local Job_Scheduler_Thread* scheduler_thread = NULL;
 
 internal void insert_scheduler_fiber_into_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
 {
@@ -305,6 +322,8 @@ internal Job_Scheduler_Fiber* get_finished_waiting_fiber()
 
 FIBER_PROC(fiber_proc)
 {
+    Job_Scheduler_Thread* scheduler_thread = (Job_Scheduler_Thread*)thread_local_storage_get();
+
     if (data)
     {
         Job_Scheduler_Fiber* previous_fiber = (Job_Scheduler_Fiber*)data;
@@ -347,9 +366,11 @@ FIBER_PROC(fiber_proc)
 
 THREAD_PROC(thread_proc)
 {
-    scheduler_thread = (Job_Scheduler_Thread*)data;
+    Job_Scheduler_Thread* scheduler_thread = (Job_Scheduler_Thread*)data;
     scheduler_thread->current_fiber = get_free_fiber();
     scheduler_thread->current_fiber->fiber.handle = convert_thread_to_fiber();
+
+    thread_local_storage_set(scheduler_thread);
 
     fiber_proc(NULL);
     return 0;
@@ -376,22 +397,12 @@ THREAD_PROC(dedicated_thread_proc)
     }
 }
 
-u32 get_thread_id()
-{
-    // TODO: Take into account if the calling thread is one of the dedicated threads
-    assert(scheduler_thread != NULL);
-    return scheduler_thread->thread.id;
-}
-
-// TODO: Better name? Should indicate that it is the threads using fibers.
-u64 get_thread_count()
-{
-    assert(scheduler_thread != NULL);
-    return scheduler.thread_count;
-}
-
 b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
 {
+    scheduler = {};
+
+    init_thread_local_storage();
+
     assert(thread_count <= MAX_THREAD_COUNT);
     scheduler.semaphore_handle = create_semaphore(thread_count);
 
@@ -401,10 +412,7 @@ b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
     }
     for (u64 i = 0; i < MAX_FIBER_COUNT; ++i)
     {
-        scheduler.fibers[i].next = NULL;
-        scheduler.fibers[i].previous = NULL;
         scheduler.fibers[i].fiber.stack_size = FIBER_STACK_SIZE;
-        scheduler.fibers[i].fiber.handle = NULL;
     }
 
     // NOTE: The main thread already counts as one thread
@@ -418,8 +426,6 @@ b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
 
         if (!thread->thread.handle)
         {
-            // TODO: Logging
-            printf("Unable to create thread!\n");
             return false;
         }
 
@@ -432,7 +438,7 @@ b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
 
     scheduler.threads[0].current_fiber = get_free_fiber();
     scheduler.threads[0].current_fiber->fiber.handle = convert_thread_to_fiber();
-    scheduler_thread = &scheduler.threads[0];
+    thread_local_storage_set(&scheduler.threads[0]);
 
     assert(dedicated_thread_count <= MAX_DEDICATED_THREAD_COUNT);
     scheduler.dedicated_thread_semaphore_handle = create_semaphore(dedicated_thread_count);
@@ -447,8 +453,6 @@ b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
 
         if (!thread->handle)
         {
-            // TODO: Logging
-            printf("Unable to create dedicated thread!\n");
             return false;
         }
         resume_thread(thread->handle);
@@ -499,6 +503,8 @@ void run_jobs_on_dedicated_thread(Job* jobs, u64 job_count, Job_Counter* counter
 
 void wait_for_counter(Job_Counter* counter, u64 count)
 {
+    Job_Scheduler_Thread* scheduler_thread = (Job_Scheduler_Thread*)thread_local_storage_get();
+
     scheduler_thread->previous_fiber = scheduler_thread->current_fiber;
     scheduler_thread->previous_fiber->finished_job_count = count;
     scheduler_thread->previous_fiber->job_counter = counter;

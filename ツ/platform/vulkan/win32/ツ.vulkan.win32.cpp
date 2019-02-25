@@ -19,7 +19,7 @@ b32 win32_init_vulkan_renderer(HWND window, u32 window_width, u32 window_height)
     if (vulkan_library == NULL)
     {
         // TODO: Logging
-        printf("Unable to load Vulkan dll!\n");
+        DEBUG_printf("Unable to load Vulkan dll!\n");
         return false;
     }
 

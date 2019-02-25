@@ -2,9 +2,6 @@
 
 #include "ツ.types.h"
 
-// TODO: Remove use of C runtime library!
-#include <math.h>
-
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define max(a, b) ((a) > (b) ? (a) : (b))
 
@@ -291,7 +288,9 @@ internal m4x4 identity()
 
 internal m4x4 perspective_infinite(f32 fov_y, f32 aspect, f32 z_near)
 {
-    f32 f = 1.0f / tanf(fov_y / 2);
+    // TODO: Need to create tanf!!!
+    // f32 f = 1.0f / tanf(fov_y / 2);
+    f32 f = 0;
     return {f / aspect, 0, 0,      0,
             0,         -f, 0,      0,
             0,          0, 0,      1,

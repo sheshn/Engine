@@ -22,6 +22,7 @@ void game_update(Frame_Parameters* frame_params)
         frame_params->camera.position.y -= amount;
     }
     frame_params->camera.view = translate(identity(), frame_params->camera.position);
+    frame_params->camera.projection = identity();
 }
 
 void game_render(Frame_Parameters* frame_params)

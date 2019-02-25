@@ -14,6 +14,16 @@
 #define megabytes(value) (kilobytes((value)) * 1024)
 #define gigabytes(value) (megabytes((value)) * 1024)
 
+void copy_memory(void* dest, void* src, u64 size)
+{
+    u8* d = (u8*)dest;
+    u8* s = (u8*)src;
+    while (size--)
+    {
+        *d++ = *s++;
+    }
+}
+
 struct Memory_Arena
 {
     u8* base;

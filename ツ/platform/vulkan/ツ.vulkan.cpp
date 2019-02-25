@@ -14,7 +14,7 @@
     {
         // TODO: Logging
         // TODO: Better log message
-        printf("Vulkan: %s\n", callback_data->pMessage);
+        DEBUG_printf("Vulkan: %s\n", callback_data->pMessage);
         return false;
     }
 #endif
@@ -777,7 +777,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     if (op)
     {
         op->texture = renderer_texture;
-        memcpy(op->memory, texture_data, texture_size);
+        copy_memory(op->memory, texture_data, texture_size);
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
@@ -824,7 +824,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     if (op)
     {
         op->buffer = material_buffer;
-        memset(op->memory, 0, 64);
+        u32* mem = (u32*)op->memory;
+        *mem = 0;
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
@@ -847,7 +848,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     if (op)
     {
         op->buffer = material_buffer2;
-        memset(op->memory, 0, 64);
         u32* mem = (u32*)op->memory;
         *mem = 1;
         renderer_queue_transfer(&renderer.transfer_queue, op);
@@ -863,7 +863,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     if (op)
     {
         op->texture = renderer_texture1;
-        memcpy(op->memory, texture_data2, texture_size2);
+        copy_memory(op->memory, texture_data2, texture_size2);
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
@@ -1486,7 +1486,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
         // TODO: Logging
-        printf("Unable to acquire Vulkan swapchain image!\n");
+        DEBUG_printf("Unable to acquire Vulkan swapchain image!\n");
         return;
     }
 
@@ -1517,7 +1517,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     else if (result != VK_SUCCESS)
     {
         // TODO: Logging
-        printf("Unable to present Vulkan swapchain image!\n");
+        DEBUG_printf("Unable to present Vulkan swapchain image!\n");
         return;
     }
 }

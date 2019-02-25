@@ -1,9 +1,7 @@
-// TODO: Remove use of C runtime library!
-#include <stdio.h>
-
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <stdarg.h>
 
 #include "../../ツ.platform.h"
 #include "../../ツ.math.h"
@@ -50,11 +48,23 @@ b32 DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8** 
     if (!result)
     {
         // TODO: Logging
-        printf("Unable to read file: %s\n", filename);
+        DEBUG_printf("Unable to read file: %s\n", filename);
     }
 
     CloseHandle(file_handle);
     return result;
+}
+
+void DEBUG_printf(char* format, ...)
+{
+    char buffer[1024];
+
+    va_list vargs;
+    va_start(vargs, format);
+    wvsprintfA(buffer, format, vargs);
+    va_end(vargs);
+
+    OutputDebugString(buffer);
 }
 
 LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
@@ -88,7 +98,7 @@ HWND create_window()
     if (!RegisterClass(&window_class))
     {
         // TODO: Logging
-        printf("Failed to register window class!\n");
+        DEBUG_printf("Failed to register window class!\n");
         return NULL;
     }
 
@@ -191,7 +201,7 @@ JOB_ENTRY_POINT(gpu_entry_point)
     frame_params->end_time = end_counter.QuadPart;
 }
 
-int main()
+void __stdcall WinMainCRTStartup()
 {
     u64 memory_size = gigabytes(1);
     u8* platform_memory = allocate_memory(memory_size);
@@ -202,24 +212,24 @@ int main()
     if (!window_handle)
     {
         // TODO: Logging
-        printf("Failed to create window!\n");
-        return 1;
+        DEBUG_printf("Failed to create window!\n");
+        ExitProcess(1);
     }
 
     // TODO: Get system thread count
-    // TODO: The job system does NOT work with optimizations :( Fix it!
-    if (!init_job_system(8, 4))
+    // TODO: The job system does NOT work at ALL :( Fix it!
+    if (!init_job_system(1, 4))
     {
         // TODO: Logging
-        printf("Failed to initialize job system!\n");
-        return 1;
+        DEBUG_printf("Failed to initialize job system!\n");
+        ExitProcess(1);
     }
 
     if (!win32_init_vulkan_renderer(window_handle, window_width, window_height))
     {
         // TODO: Logging
-        printf("Failed to initialize Vulkan!\n");
-        return 1;
+        DEBUG_printf("Failed to initialize Vulkan!\n");
+        ExitProcess(1);
     }
 
     Frame_Parameters frames[MAX_FRAMES] = {};
@@ -231,8 +241,6 @@ int main()
 
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
-    current_frame->camera.projection = perspective_infinite(radians(80), 4.0f/3.0f, 0.1f);
-    current_frame->camera.view = identity();
 
     LARGE_INTEGER performance_frequency;
     QueryPerformanceFrequency(&performance_frequency);
@@ -262,12 +270,12 @@ int main()
                 u64 elapsed_time = current_frame->end_time - current_frame->start_time;
                 f64 ms_per_frame = (1000.0 * elapsed_time) / performance_frequency.QuadPart;
                 f64 fps = performance_frequency.QuadPart / (f64)elapsed_time;
-                printf("ms per frame: %f, fps: %f\n", ms_per_frame, fps);
+                DEBUG_printf("ms per frame: %lu, fps: %lu\n", (u32)ms_per_frame, (u32)fps);
             }
         }
 
         current_frame->camera = current_frame->previous->camera;
     }
 
-    return 0;
+    ExitProcess(0);
 }
