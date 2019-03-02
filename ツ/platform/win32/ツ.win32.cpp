@@ -1,3 +1,24 @@
+extern "C" void* __cdecl memset(void* dest, int value, size_t count)
+{
+    unsigned char* bytes = (unsigned char*)dest;
+    while (count--)
+    {
+        *bytes++ = (unsigned char)value;
+    }
+    return dest;
+}
+
+extern "C" void* __cdecl memcpy(void* dest, const void* src, size_t size)
+{
+    unsigned char* d = (unsigned char*)dest;
+    unsigned char* s = (unsigned char*)src;
+    while (size--)
+    {
+        *d++ = *s++;
+    }
+    return dest;
+}
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>

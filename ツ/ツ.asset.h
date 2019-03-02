@@ -1,7 +1,5 @@
 #pragma once
 
-#include "ツ.renderer.h"
-
 // TODO: Don't store data (eg. Vertex* vertices)?
 // Read directly from asset file into GPU memory?
 

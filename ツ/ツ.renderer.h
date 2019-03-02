@@ -1,7 +1,5 @@
 #pragma once
 
-#include "ツ.h"
-
 struct Renderer_Buffer
 {
     u32 id;

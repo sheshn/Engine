@@ -1,5 +1,4 @@
 #include "ツ.vulkan.h"
-#include "../../ツ.platform.h"
 
 #define VK_FUNCTION(function) PFN_##function function;
     VK_FUNCTIONS_DEBUG

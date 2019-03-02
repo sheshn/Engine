@@ -4,10 +4,6 @@
 #define VKAPI_PTR  VKAPI_CALL
 #include "../ツ.vulkan.h"
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-
 #define VK_KHR_WIN32_SURFACE_EXTENSION_NAME "VK_KHR_win32_surface"
 
 typedef VkFlags VkWin32SurfaceCreateFlagsKHR;

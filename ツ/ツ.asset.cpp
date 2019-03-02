@@ -1,5 +1,4 @@
 #include "ツ.asset.h"
-#include "ツ.math.h"
 
 struct Assets
 {

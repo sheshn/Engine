@@ -49,7 +49,7 @@ struct Thread
         return TlsGetValue(thread_local_storage_index);
     }
 
-    internal void init_fiber(Fiber* fiber, void* fiber_proc, void* data)
+    internal void init_fiber(Fiber* fiber, LPFIBER_START_ROUTINE fiber_proc, void* data)
     {
         if (fiber->handle)
         {
