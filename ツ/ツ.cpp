@@ -15,11 +15,11 @@ void game_update(Frame_Parameters* frame_params)
 
     if (frame_params->input.button_up.is_down)
     {
-        frame_params->camera.position.y += amount;
+        frame_params->camera.position.y -= amount;
     }
     else if (frame_params->input.button_down.is_down)
     {
-        frame_params->camera.position.y -= amount;
+        frame_params->camera.position.y += amount;
     }
     frame_params->camera.view = translate(identity(), frame_params->camera.position);
     frame_params->camera.projection = identity();

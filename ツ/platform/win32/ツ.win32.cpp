@@ -191,7 +191,7 @@ JOB_ENTRY_POINT(render_entry_point)
     Frame_Parameters* frame_params = (Frame_Parameters*)data;
 
     Job game = {game_entry_point, frame_params, NULL};
-    run_jobs(&game, 1, &frame_params->game_counter, JOB_PRIORITY_HIGH);
+    run_jobs(&game, 1, &frame_params->game_counter);
     wait_for_counter(&frame_params->game_counter, 0);
 
     if (frame_params->frame_number != 0)
@@ -207,7 +207,7 @@ JOB_ENTRY_POINT(gpu_entry_point)
     Frame_Parameters* frame_params = (Frame_Parameters*)data;
 
     Job render = {render_entry_point, frame_params, NULL};
-    run_jobs(&render, 1, &frame_params->render_counter, JOB_PRIORITY_HIGH);
+    run_jobs(&render, 1, &frame_params->render_counter);
     wait_for_counter(&frame_params->render_counter, 0);
 
     if (frame_params->frame_number != 0)
@@ -237,14 +237,9 @@ void __stdcall WinMainCRTStartup()
         ExitProcess(1);
     }
 
-    // TODO: Get system thread count
-    // TODO: The job system does NOT work at ALL :( Fix it!
-    if (!init_job_system(1, 4))
-    {
-        // TODO: Logging
-        DEBUG_printf("Failed to initialize job system!\n");
-        ExitProcess(1);
-    }
+    SYSTEM_INFO sys_info;
+    GetSystemInfo(&sys_info);
+    init_job_system(sys_info.dwNumberOfProcessors - 1, 4, &platform_arena);
 
     if (!win32_init_vulkan_renderer(window_handle, window_width, window_height))
     {
@@ -278,7 +273,7 @@ void __stdcall WinMainCRTStartup()
         current_frame->gpu_counter = 1;
 
         Job gpu = {gpu_entry_point, current_frame, NULL};
-        run_jobs(&gpu, 1, &current_frame->gpu_counter, JOB_PRIORITY_HIGH);
+        run_jobs(&gpu, 1, &current_frame->gpu_counter);
 
         current_frame = current_frame->next;
 

@@ -3,70 +3,113 @@
 
 struct Fiber
 {
-    void* handle;
+    void* context;
+    u8*   stack;
     u64   stack_size;
+
+    Fiber* next;
+    Fiber* previous;
+
+    Job_Counter* job_counter;
+    u64          finished_job_count;
+};
+
+struct Fiber_List
+{
+    Fiber        sentinel;
+    volatile u32 lock;
 };
 
 struct Thread
 {
     void* handle;
     u32   id;
+
+    Fiber*      current_fiber;
+    Fiber*      previous_fiber;
+    Fiber_List* list_to_add_previous_fiber;
 };
 
-// Platform specific threads and fibers
 #if defined(_WIN32)
-    #define WIN32_LEAN_AND_MEAN
-    #define NOMINMAX
-    #include <windows.h>
-
-    #define FIBER_PROC(name) void CALLBACK name(PVOID data)
     #define THREAD_PROC(name) DWORD WINAPI name(LPVOID data)
-
     #define create_semaphore(max_count) (void*)CreateSemaphore(NULL, (max_count), (max_count), NULL)
     #define semaphore_signal(semaphore_handle) ReleaseSemaphore((semaphore_handle), 1, NULL)
     #define semaphore_wait(semaphore_handle) WaitForSingleObject((semaphore_handle), INFINITE)
-    #define create_suspended_thread(thread_proc, data) (void*)CreateThread(NULL, 1024 * 1024, (LPTHREAD_START_ROUTINE)(thread_proc), (data), CREATE_SUSPENDED, NULL)
+    #define create_suspended_thread(thread_proc, data) (void*)CreateThread(NULL, megabytes(1), (LPTHREAD_START_ROUTINE)(thread_proc), (data), CREATE_SUSPENDED, NULL)
     #define resume_thread(thread_handle) ResumeThread((HANDLE)(thread_handle))
     #define bind_thread_to_core(thread_handle, core) SetThreadAffinityMask((thread_handle) ? (HANDLE)(thread_handle) : GetCurrentThread(), (u64)1 << (core))
-    #define convert_thread_to_fiber() ConvertThreadToFiber(NULL)
-    #define switch_fiber(current, next) SwitchToFiber((next)->handle)
 
     internal DWORD thread_local_storage_index;
+    #define init_thread_local_storage() thread_local_storage_index = TlsAlloc()
+    #define set_thread_local_storage(value) TlsSetValue(thread_local_storage_index, (LPVOID)(value))
+    #define get_thread_local_storage() TlsGetValue(thread_local_storage_index)
 
-    internal void init_thread_local_storage()
-    {
-        thread_local_storage_index = TlsAlloc();
-        assert(thread_local_storage_index != TLS_OUT_OF_INDEXES);
-    }
+    #if defined(__clang__)
+        #define FIBER_PROC(name) void name()
+        typedef void (*Fiber_Proc)();
 
-    internal void thread_local_storage_set(LPVOID value)
-    {
-        TlsSetValue(thread_local_storage_index, value);
-    }
-
-    internal LPVOID thread_local_storage_get()
-    {
-        return TlsGetValue(thread_local_storage_index);
-    }
-
-    internal void init_fiber(Fiber* fiber, LPFIBER_START_ROUTINE fiber_proc, void* data)
-    {
-        if (fiber->handle)
+        internal void init_fiber(Fiber* fiber, u8* stack, u64 stack_size, Fiber_Proc fiber_proc)
         {
-            DeleteFiber(fiber->handle);
+            fiber->stack = stack;
+            fiber->stack_size = stack_size;
+
+            uintptr_t* stack_pointer = (uintptr_t*)(((uintptr_t)stack + stack_size) & (uintptr_t)-16) - 2;
+            *stack_pointer = (uintptr_t)fiber_proc;
+            stack_pointer -= 8;
+
+            *--stack_pointer = 0;
+            *--stack_pointer = (uintptr_t)(stack + stack_size);
+            *--stack_pointer = (uintptr_t)stack;
+
+            fiber->context = (void*)(stack_pointer);
         }
 
-        fiber->handle = CreateFiber(fiber->stack_size, (LPFIBER_START_ROUTINE)fiber_proc, data);
-        if (!fiber->handle)
+        // TODO: We also have to save xmm6-xmm15 registers
+        external void swap_context(void** current, void* dest) asm("_swap_context");
+        asm(R"(
+            .text
+            _swap_context:
+
+            pushq %r12
+            pushq %r13
+            pushq %r14
+            pushq %r15
+            pushq %rsi
+            pushq %rdi
+            pushq %rbp
+            pushq %rbx
+            pushq %gs:0x00
+            pushq %gs:0x08
+            pushq %gs:0x10
+
+            movq %rsp, (%rcx)
+            movq %rdx, %rsp
+
+            popq %gs:0x10
+            popq %gs:0x08
+            popq %gs:0x00
+            popq %rbx
+            popq %rbp
+            popq %rdi
+            popq %rsi
+            popq %r15
+            popq %r14
+            popq %r13
+            popq %r12
+
+            ret
+        )");
+
+        internal void switch_fiber(Fiber* current, Fiber* next)
         {
-            // TODO: Logging
-            // printf("Unable to create fiber!\n");
+            void* dest = next->context;
+            next->context = NULL;
+
+            assert(dest);
+            swap_context(&current->context, dest);
         }
-    };
+    #endif
 #elif defined(__APPLE__) && defined(__MACH__)
-    #define FIBER_PROC(name) void name(void* data)
-    #define THREAD_PROC(name) void* name(void* data)
-
     // TODO: Define thread and fiber stuff for other platforms
 #elif defined(__linux__)
     // TODO: Define thread and fiber stuff for other platforms
@@ -88,7 +131,7 @@ struct Job_Queue
 
 internal void init_job_queue(Job_Queue* queue)
 {
-    u64 max_jobs = sizeof(queue->jobs) / sizeof(queue->jobs[0]);
+    u64 max_jobs = array_count(queue->jobs);
 
     queue->enqueue_index = 0;
     queue->dequeue_index = 0;
@@ -96,6 +139,7 @@ internal void init_job_queue(Job_Queue* queue)
 
     for (u64 i = 0; i < max_jobs; ++i)
     {
+        queue->jobs[i].job = {};
         queue->jobs[i].index = i;
     }
 }
@@ -163,96 +207,7 @@ internal b32 dequeue_job(Job_Queue* queue, Job* job)
             dequeue_index = queue->dequeue_index;
         }
     }
-}
-
-struct Job_Scheduler_Fiber
-{
-    Job_Scheduler_Fiber* next;
-    Job_Scheduler_Fiber* previous;
-
-    Fiber        fiber;
-    Job_Counter* job_counter;
-    u64          finished_job_count;
-};
-
-struct Job_Scheduler_Thread
-{
-    Thread thread;
-
-    Job_Scheduler_Fiber*  current_fiber;
-    Job_Scheduler_Fiber*  previous_fiber;
-    Job_Scheduler_Fiber** previous_fiber_list;
-    volatile u32*         previous_fiber_list_lock;
-};
-
-#define MAX_THREAD_COUNT 16
-#define MAX_QUEUE_COUNT  (JOB_PRIORITY_HIGH + 1)
-#define MAX_FIBER_COUNT  256
-#define FIBER_STACK_SIZE kilobytes(64)
-
-#define MAX_DEDICATED_THREAD_COUNT 4
-
-struct Job_Scheduler
-{
-    Job_Scheduler_Thread threads[MAX_THREAD_COUNT];
-    Job_Queue            queues[MAX_QUEUE_COUNT];
-    Job_Scheduler_Fiber  fibers[MAX_FIBER_COUNT];
-
-    u32 thread_count;
-    u32 current_fiber_index;
-
-    Job_Scheduler_Fiber* fibers_free_list;
-    volatile u32         fibers_free_list_lock;
-
-    Job_Scheduler_Fiber* fibers_wait_list;
-    volatile u32         fibers_wait_list_lock;
-
-    void* semaphore_handle;
-
-    // TODO: Maybe come up with a better name for this?
-    Thread    dedicated_threads[MAX_DEDICATED_THREAD_COUNT];
-    Job_Queue dedicated_thread_queue;
-
-    u32   dedicated_thread_count;
-    void* dedicated_thread_semaphore_handle;
-};
-
-internal Job_Scheduler scheduler;
-
-internal void insert_scheduler_fiber_into_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
-{
-    if (!*list)
-    {
-        *list = fiber;
-        fiber->previous = NULL;
-        fiber->next = NULL;
-    }
-    else
-    {
-        fiber->previous = NULL;
-        fiber->next = *list;
-        (*list)->previous = fiber;
-        *list = fiber;
-    }
-}
-
-internal void remove_scheduler_fiber_from_list(Job_Scheduler_Fiber** list, Job_Scheduler_Fiber* fiber)
-{
-    if (fiber->next)
-    {
-        fiber->next->previous = fiber->previous;
-    }
-    if (fiber->previous)
-    {
-        fiber->previous->next = fiber->next;
-    }
-    if (*list == fiber)
-    {
-        *list = fiber->next;
-    }
-
-    fiber->next = NULL;
-    fiber->previous = NULL;
+    return false;
 }
 
 internal void spinlock_begin(volatile u32* lock)
@@ -278,30 +233,71 @@ internal void spinlock_end(volatile u32* lock)
     *lock = 0;
 }
 
-internal Job_Scheduler_Fiber* get_free_fiber()
+#define FIBER_STACK_SIZE           kilobytes(64)
+#define MAX_FIBER_COUNT            256
+#define MAX_WORKER_THREAD_COUNT    16
+#define MAX_DEDICATED_THREAD_COUNT 4
+
+struct Scheduler
 {
-    Job_Scheduler_Fiber* fiber = NULL;
+    Thread worker_threads[MAX_WORKER_THREAD_COUNT];
+    u32    worker_thread_count;
 
-    spinlock_begin(&scheduler.fibers_free_list_lock);
-    if (scheduler.current_fiber_index < MAX_FIBER_COUNT)
+    Thread dedicated_threads[MAX_DEDICATED_THREAD_COUNT];
+    u32    dedicated_thread_count;
+
+    Fiber      fibers[MAX_FIBER_COUNT];
+    Fiber_List fiber_wait_list;
+    Fiber_List fiber_free_list;
+
+    Job_Queue worker_threads_queue;
+    Job_Queue dedicated_threads_queue;
+
+    void* worker_threads_semaphore_handle;
+    void* dedicated_threads_semaphore_handle;
+};
+
+internal Scheduler scheduler;
+
+internal void add_fiber_to_list(Fiber_List* list, Fiber* fiber)
+{
+    fiber->previous = &list->sentinel;
+    fiber->next = list->sentinel.next;
+    if (fiber->next)
     {
-        fiber = &scheduler.fibers[scheduler.current_fiber_index++];
+        fiber->next->previous = fiber;
     }
-    else if (scheduler.fibers_free_list)
+    list->sentinel.next = fiber;
+}
+
+internal void remove_fiber_from_list(Fiber* fiber)
+{
+    fiber->previous->next = fiber->next;
+    if (fiber->next)
     {
-        fiber = scheduler.fibers_free_list;
-        remove_scheduler_fiber_from_list(&scheduler.fibers_free_list, fiber);
+        fiber->next->previous = fiber->previous;
     }
 
-    spinlock_end(&scheduler.fibers_free_list_lock);
+    fiber->previous = NULL;
+    fiber->next = NULL;
+}
+
+internal Fiber* get_free_fiber()
+{
+    spinlock_begin(&scheduler.fiber_free_list.lock);
+
+    Fiber* fiber = scheduler.fiber_free_list.sentinel.next;
+    remove_fiber_from_list(fiber);
+
+    spinlock_end(&scheduler.fiber_free_list.lock);
     return fiber;
 }
 
-internal Job_Scheduler_Fiber* get_finished_waiting_fiber()
+internal Fiber* get_finished_waiting_fiber()
 {
-    spinlock_begin(&scheduler.fibers_wait_list_lock);
+    spinlock_begin(&scheduler.fiber_wait_list.lock);
 
-    Job_Scheduler_Fiber* fiber = scheduler.fibers_wait_list;
+    Fiber* fiber = scheduler.fiber_wait_list.sentinel.next;
     while (fiber)
     {
         if (*fiber->job_counter == fiber->finished_job_count)
@@ -313,66 +309,78 @@ internal Job_Scheduler_Fiber* get_finished_waiting_fiber()
 
     if (fiber)
     {
-        remove_scheduler_fiber_from_list(&scheduler.fibers_wait_list, fiber);
+        remove_fiber_from_list(fiber);
     }
 
-    spinlock_end(&scheduler.fibers_wait_list_lock);
+    spinlock_end(&scheduler.fiber_wait_list.lock);
     return fiber;
 }
 
 FIBER_PROC(fiber_proc)
 {
-    Job_Scheduler_Thread* scheduler_thread = (Job_Scheduler_Thread*)thread_local_storage_get();
-
-    if (data)
+    Thread* thread = (Thread*)get_thread_local_storage();
+    if (thread->previous_fiber)
     {
-        Job_Scheduler_Fiber* previous_fiber = (Job_Scheduler_Fiber*)data;
-        spinlock_begin(&scheduler.fibers_wait_list_lock);
-        insert_scheduler_fiber_into_list(&scheduler.fibers_wait_list, previous_fiber);
-        spinlock_end(&scheduler.fibers_wait_list_lock);
+        assert(thread->list_to_add_previous_fiber);
+
+        spinlock_begin(&thread->list_to_add_previous_fiber->lock);
+        add_fiber_to_list(thread->list_to_add_previous_fiber, thread->previous_fiber);
+        spinlock_end(&thread->list_to_add_previous_fiber->lock);
     }
 
+    u32 retry_count = 0;
     while (true)
     {
-        Job_Scheduler_Fiber* fiber = get_finished_waiting_fiber();
+        Fiber* fiber = get_finished_waiting_fiber();
         if (fiber)
         {
-            scheduler_thread->previous_fiber = scheduler_thread->current_fiber;
-            scheduler_thread->previous_fiber_list = &scheduler.fibers_free_list;
-            scheduler_thread->previous_fiber_list_lock = &scheduler.fibers_free_list_lock;
+            thread = (Thread*)get_thread_local_storage();
+            assert(thread && thread->current_fiber);
 
-            scheduler_thread->current_fiber = fiber;
-            switch_fiber(&scheduler_thread->previous_fiber->fiber, &scheduler_thread->current_fiber->fiber);
+            thread->list_to_add_previous_fiber = &scheduler.fiber_free_list;
+            thread->previous_fiber = thread->current_fiber;
+            thread->current_fiber = fiber;
+            switch_fiber(thread->previous_fiber, fiber);
+
+            thread = (Thread*)get_thread_local_storage();
+            spinlock_begin(&thread->list_to_add_previous_fiber->lock);
+            add_fiber_to_list(thread->list_to_add_previous_fiber, thread->previous_fiber);
+            spinlock_end(&thread->list_to_add_previous_fiber->lock);
         }
 
         Job job;
-        if (!dequeue_job(&scheduler.queues[JOB_PRIORITY_HIGH], &job) &&
-            !dequeue_job(&scheduler.queues[JOB_PRIORITY_MEDIUM], &job) &&
-            !dequeue_job(&scheduler.queues[JOB_PRIORITY_LOW], &job))
+        if (!dequeue_job(&scheduler.worker_threads_queue, &job))
         {
-            semaphore_wait(scheduler.semaphore_handle);
+            // TODO: See if there is a better way to fix putting the thread to sleep when there is no work to do!
+            if (++retry_count >= 100)
+            {
+                semaphore_wait(scheduler.worker_threads_semaphore_handle);
+                retry_count = 0;
+            }
         }
         else
         {
-            scheduler_thread->current_fiber->job_counter = job.counter;
             job.entry_point(job.data);
             atomic_decrement(job.counter);
 
-            // NOTE: Wake up all threads!
-            semaphore_signal(scheduler.semaphore_handle);
+            semaphore_signal(scheduler.worker_threads_semaphore_handle);
         }
     }
 }
 
-THREAD_PROC(thread_proc)
+THREAD_PROC(worker_thread_proc)
 {
-    Job_Scheduler_Thread* scheduler_thread = (Job_Scheduler_Thread*)data;
-    scheduler_thread->current_fiber = get_free_fiber();
-    scheduler_thread->current_fiber->fiber.handle = convert_thread_to_fiber();
+    Fiber* fiber = get_free_fiber();
+    assert(fiber);
 
-    thread_local_storage_set(scheduler_thread);
+    Thread* thread = (Thread*)data;
+    thread->current_fiber = fiber;
+    thread->previous_fiber = NULL;
+    thread->list_to_add_previous_fiber = NULL;
 
-    fiber_proc(NULL);
+    set_thread_local_storage(thread);
+
+    fiber_proc();
     return 0;
 }
 
@@ -381,9 +389,9 @@ THREAD_PROC(dedicated_thread_proc)
     while (true)
     {
         Job job;
-        if (!dequeue_job(&scheduler.dedicated_thread_queue, &job))
+        if (!dequeue_job(&scheduler.dedicated_threads_queue, &job))
         {
-            semaphore_wait(scheduler.dedicated_thread_semaphore_handle);
+            semaphore_wait(scheduler.dedicated_threads_semaphore_handle);
         }
         else
         {
@@ -392,136 +400,111 @@ THREAD_PROC(dedicated_thread_proc)
 
             // TODO: We may want to wake up the dedicated threads as well.
             // Seems to work without doing that (for now)!
-            semaphore_signal(scheduler.semaphore_handle);
+            semaphore_signal(scheduler.worker_threads_semaphore_handle);
         }
     }
+
+    return 0;
 }
 
-b32 init_job_system(u32 thread_count, u32 dedicated_thread_count)
+void init_job_system(u32 worker_thread_count, u32 dedicated_thread_count, Memory_Arena* memory_arena)
 {
-    scheduler = {};
-
     init_thread_local_storage();
 
-    assert(thread_count <= MAX_THREAD_COUNT);
-    scheduler.semaphore_handle = create_semaphore(thread_count);
-
-    for (u64 i = 0; i < MAX_QUEUE_COUNT; ++i)
+    for (u32 i = 0; i < array_count(scheduler.fibers); ++i)
     {
-        init_job_queue(&scheduler.queues[i]);
-    }
-    for (u64 i = 0; i < MAX_FIBER_COUNT; ++i)
-    {
-        scheduler.fibers[i].fiber.stack_size = FIBER_STACK_SIZE;
+        u64 stack_size = kilobytes(64);
+        init_fiber(&scheduler.fibers[i], memory_arena_reserve(memory_arena, stack_size), stack_size, fiber_proc);
+        add_fiber_to_list(&scheduler.fiber_free_list, &scheduler.fibers[i]);
     }
 
-    // NOTE: The main thread already counts as one thread
-    // (thread_count - 1) additional threads will be created
-    scheduler.thread_count = thread_count;
-    for (u32 i = 1; i < scheduler.thread_count; ++i)
+    init_job_queue(&scheduler.worker_threads_queue);
+    init_job_queue(&scheduler.dedicated_threads_queue);
+
+    scheduler.worker_threads_semaphore_handle = create_semaphore(worker_thread_count);
+    scheduler.dedicated_threads_semaphore_handle = create_semaphore(dedicated_thread_count);
+
+    // NOTE: worker_thread_count should be the amount of worker threads wanted minus the main thread
+    scheduler.worker_thread_count = worker_thread_count + 1;
+    for (u32 i = 1; i < scheduler.worker_thread_count; ++i)
     {
-        Job_Scheduler_Thread* thread = &scheduler.threads[i];
-        thread->thread.id = i;
-        thread->thread.handle = create_suspended_thread(&thread_proc, thread);
+        Thread* thread = &scheduler.worker_threads[i];
+        thread->id = i;
+        thread->handle = create_suspended_thread(&worker_thread_proc, thread);
+        assert(thread->handle);
 
-        if (!thread->thread.handle)
-        {
-            return false;
-        }
-
-        bind_thread_to_core(thread->thread.handle, i);
-        resume_thread(thread->thread.handle);
+        bind_thread_to_core(thread->handle, i);
+        resume_thread(thread->handle);
     }
 
-    scheduler.threads[0].thread.id = 0;
+    Fiber* fiber = get_free_fiber();
+    assert(fiber);
+
+    scheduler.worker_threads[0].id = 0;
+    scheduler.worker_threads[0].current_fiber = fiber;
+    scheduler.worker_threads[0].previous_fiber = NULL;
+    scheduler.worker_threads[0].list_to_add_previous_fiber = NULL;
     bind_thread_to_core(NULL, 0);
 
-    scheduler.threads[0].current_fiber = get_free_fiber();
-    scheduler.threads[0].current_fiber->fiber.handle = convert_thread_to_fiber();
-    thread_local_storage_set(&scheduler.threads[0]);
-
-    assert(dedicated_thread_count <= MAX_DEDICATED_THREAD_COUNT);
-    scheduler.dedicated_thread_semaphore_handle = create_semaphore(dedicated_thread_count);
-    init_job_queue(&scheduler.dedicated_thread_queue);
+    set_thread_local_storage(&scheduler.worker_threads[0]);
 
     scheduler.dedicated_thread_count = dedicated_thread_count;
     for (u32 i = 0; i < scheduler.dedicated_thread_count; ++i)
     {
         Thread* thread = &scheduler.dedicated_threads[i];
-        thread->id = scheduler.thread_count + i;
+        thread->id = i;
         thread->handle = create_suspended_thread(&dedicated_thread_proc, thread);
+        assert(thread->handle);
 
-        if (!thread->handle)
-        {
-            return false;
-        }
         resume_thread(thread->handle);
     }
-
-    return true;
 }
 
-void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter)
+internal void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter, Job_Queue* queue, void* semaphore_handle)
 {
-    run_jobs(jobs, job_count, counter, JOB_PRIORITY_MEDIUM);
-}
-
-void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter, Job_Priority priority)
-{
-    Job_Queue* queue = &scheduler.queues[priority];
     *counter = job_count;
-
-    u64 i = 0;
-    while (i < job_count)
+    for (u64 i = 0; i < job_count;)
     {
         jobs[i].counter = counter;
         if (enqueue_job(queue, jobs[i]))
         {
             i++;
-            semaphore_signal(scheduler.semaphore_handle);
+            semaphore_signal(semaphore_handle);
         }
     }
+}
+
+void run_jobs(Job* jobs, u64 job_count, Job_Counter* counter)
+{
+    run_jobs(jobs, job_count, counter, &scheduler.worker_threads_queue, scheduler.worker_threads_semaphore_handle);
 }
 
 void run_jobs_on_dedicated_thread(Job* jobs, u64 job_count, Job_Counter* counter)
 {
-    *counter = job_count;
-
-    u64 i = 0;
-    while (i < job_count)
-    {
-        jobs[i].counter = counter;
-        if (enqueue_job(&scheduler.dedicated_thread_queue, jobs[i]))
-        {
-            i++;
-
-            // TODO: Maybe only signal one thread to wake up?
-            semaphore_signal(scheduler.dedicated_thread_semaphore_handle);
-        }
-    }
+    run_jobs(jobs, job_count, counter, &scheduler.dedicated_threads_queue, scheduler.dedicated_threads_semaphore_handle);
 }
 
 void wait_for_counter(Job_Counter* counter, u64 count)
 {
-    Job_Scheduler_Thread* scheduler_thread = (Job_Scheduler_Thread*)thread_local_storage_get();
+    Thread* thread = (Thread*)get_thread_local_storage();
+    assert(thread && thread->current_fiber);
 
-    scheduler_thread->previous_fiber = scheduler_thread->current_fiber;
-    scheduler_thread->previous_fiber->finished_job_count = count;
-    scheduler_thread->previous_fiber->job_counter = counter;
+    thread->current_fiber->job_counter = counter;
+    thread->current_fiber->finished_job_count = count;
 
-    scheduler_thread->previous_fiber_list = &scheduler.fibers_wait_list;
-    scheduler_thread->previous_fiber_list_lock = &scheduler.fibers_wait_list_lock;
-    scheduler_thread->current_fiber = get_finished_waiting_fiber();
-
-    if (!scheduler_thread->current_fiber)
+    Fiber* next_fiber = get_finished_waiting_fiber();
+    if (!next_fiber)
     {
-        scheduler_thread->current_fiber = get_free_fiber();
-        init_fiber(&scheduler_thread->current_fiber->fiber, fiber_proc, scheduler_thread->previous_fiber);
+        next_fiber = get_free_fiber();
     }
 
-    switch_fiber(&scheduler_thread->previous_fiber->fiber, &scheduler_thread->current_fiber->fiber);
+    thread->list_to_add_previous_fiber = &scheduler.fiber_wait_list;
+    thread->previous_fiber = thread->current_fiber;
+    thread->current_fiber = next_fiber;
+    switch_fiber(thread->previous_fiber, next_fiber);
 
-    spinlock_begin(scheduler_thread->previous_fiber_list_lock);
-    insert_scheduler_fiber_into_list(scheduler_thread->previous_fiber_list, scheduler_thread->previous_fiber);
-    spinlock_end(scheduler_thread->previous_fiber_list_lock);
+    thread = (Thread*)get_thread_local_storage();
+    spinlock_begin(&thread->list_to_add_previous_fiber->lock);
+    add_fiber_to_list(thread->list_to_add_previous_fiber, thread->previous_fiber);
+    spinlock_end(&thread->list_to_add_previous_fiber->lock);
 }

@@ -245,7 +245,7 @@ internal v4& operator/=(v4& left, f32 right)
 
 internal m4x4 operator*(m4x4 left, m4x4 right)
 {
-    m4x4 result;
+    m4x4 result = {};
     for (u64 j = 0; j < 4; ++j)
     {
         for (u64 k = 0; k < 4; ++k)
@@ -261,7 +261,7 @@ internal m4x4 operator*(m4x4 left, m4x4 right)
 
 internal v4 operator*(m4x4 left, v4 right)
 {
-    v4 result;
+    v4 result = {};
     for (size_t i = 0; i < 4; ++i)
     {
         for (size_t j = 0; j < 4; ++j)

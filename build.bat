@@ -27,7 +27,11 @@ pushd %BUILD_DIR%
 :: cl /utf-8 /std:c++latest /O2 /D_CRT_SECURE_NO_WARNINGS /DUNICODE /W3 /Zi /MDd /EHsc /Fointermediates\ /nologo ..\tools\%CURRENT_FOLDER%.vulkan.generator.cpp kernel32.lib user32.lib /link /OUT:%CURRENT_FOLDER%.vulkan.generator.exe /INCREMENTAL:NO /NOLOGO
 call %CURRENT_FOLDER%.vulkan.generator.exe %VK_SDK_PATH%\Include\vulkan\vulkan_core.h ..\%CURRENT_FOLDER%\platform\vulkan\%CURRENT_FOLDER%.vulkan.cpp ..\%CURRENT_FOLDER%\platform\vulkan\%CURRENT_FOLDER%.vulkan.generated.h
 
+:: Job Test
+clang ..\tools\%CURRENT_FOLDER%.job.test.cpp -o%CURRENT_FOLDER%.job.test.exe -DDEBUG -O3 -g -gcodeview -gno-column-info -fno-exceptions -fno-cxx-exceptions -fno-rtti -mno-stack-arg-probe -Wno-writable-strings --for-linker -machine:x64 --for-linker -incremental:no --for-linker -opt:ref --for-linker -subsystem:console --for-linker -stack:0x100000,0x100000 --for-linker -libpath:"%WINDOWS_SDK_PATH%\Lib\%WINDOWS_SDK_VERSION%\um\x64" -luser32.lib -lkernel32.lib
+
 :: Engine
+rem clang ..\%CURRENT_FOLDER%\platform\win32\%CURRENT_FOLDER%.win32.cpp -o%CURRENT_FOLDER%.exe -O3 -g -gcodeview -gno-column-info -fno-exceptions -fno-cxx-exceptions -fno-rtti -mno-stack-arg-probe -Wno-writable-strings --for-linker -machine:x64 --for-linker -nodefaultlib --for-linker -incremental:no --for-linker -opt:ref --for-linker -subsystem:windows --for-linker -stack:0x100000,0x100000 --for-linker -libpath:"%WINDOWS_SDK_PATH%\Lib\%WINDOWS_SDK_VERSION%\um\x64" -luser32.lib -lkernel32.lib
 clang ..\%CURRENT_FOLDER%\platform\win32\%CURRENT_FOLDER%.win32.cpp -o%CURRENT_FOLDER%.exe -DDEBUG -O0 -g -gcodeview -gno-column-info -fno-exceptions -fno-cxx-exceptions -fno-rtti -mno-stack-arg-probe -Wno-writable-strings --for-linker -machine:x64 --for-linker -nodefaultlib --for-linker -incremental:no --for-linker -opt:ref --for-linker -subsystem:windows --for-linker -stack:0x100000,0x100000 --for-linker -libpath:"%WINDOWS_SDK_PATH%\Lib\%WINDOWS_SDK_VERSION%\um\x64" -luser32.lib -lkernel32.lib
 popd
 
