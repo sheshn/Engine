@@ -993,14 +993,15 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operati
     Renderer_Transfer_Operation* operation = NULL;
     if (renderer.transfer_queue.operation_count < array_count(renderer.transfer_queue.operations) && renderer.transfer_queue.transfer_memory_used + transfer_size <= renderer.transfer_queue.transfer_memory_size)
     {
-        // TODO: Proper alignment!
         u64 size = transfer_size;
-        if (renderer.transfer_queue.enqueue_location + transfer_size >= renderer.transfer_queue.transfer_memory_size)
+        u64 aligned_offset = type == RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE ? ((renderer.transfer_queue.enqueue_location + 16 - 1) & -16) - renderer.transfer_queue.enqueue_location : 0;
+        if (renderer.transfer_queue.enqueue_location + size + aligned_offset >= renderer.transfer_queue.transfer_memory_size)
         {
             if (transfer_size < renderer.transfer_queue.dequeue_location)
             {
-                renderer.transfer_queue.enqueue_location = 0;
                 size += renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.enqueue_location;
+                renderer.transfer_queue.enqueue_location = 0;
+                aligned_offset = 0;
             }
             else
             {
@@ -1013,13 +1014,13 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operati
 
         atomic_increment(&renderer.transfer_queue.operation_count);
 
-        operation->memory = renderer.transfer_queue.transfer_memory + renderer.transfer_queue.enqueue_location;
+        operation->memory = renderer.transfer_queue.transfer_memory + renderer.transfer_queue.enqueue_location + aligned_offset;
         operation->size = size;
         operation->state = RENDERER_TRANSFER_OPERATION_STATE_UNLOADED;
         operation->type = type;
 
-        renderer.transfer_queue.enqueue_location = (renderer.transfer_queue.enqueue_location + transfer_size) % renderer.transfer_queue.transfer_memory_size;
-        atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, size);
+        renderer.transfer_queue.enqueue_location = (renderer.transfer_queue.enqueue_location + transfer_size + aligned_offset) % renderer.transfer_queue.transfer_memory_size;
+        atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, size + aligned_offset);
 
         assert(renderer.transfer_queue.transfer_memory_used <= renderer.transfer_queue.transfer_memory_size);
     }
@@ -1075,12 +1076,14 @@ internal void resolve_pending_transfer_operations()
             }
             else
             {
-                u64 src_offset = renderer.transfer_queue.dequeue_location;
+                u64 aligned_offset = operation->type == RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE ? ((renderer.transfer_queue.dequeue_location + 16 - 1) & -16) - renderer.transfer_queue.dequeue_location : 0;
+                u64 src_offset = renderer.transfer_queue.dequeue_location + aligned_offset;
                 u64 size = operation->size;
-                if (renderer.transfer_queue.dequeue_location + operation->size >= renderer.transfer_queue.transfer_memory_size)
+                if (renderer.transfer_queue.dequeue_location + operation->size + aligned_offset >= renderer.transfer_queue.transfer_memory_size)
                 {
                     size = operation->size - renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.dequeue_location;
                     src_offset = 0;
+                    aligned_offset = 0;
                     create_new_mesh_buffer_copy = true;
                     last_material_index = S32_MIN;
                     last_xform_index = S32_MIN;
@@ -1233,8 +1236,8 @@ internal void resolve_pending_transfer_operations()
 
                 operation->state = RENDERER_TRANSFER_OPERATION_STATE_QUEUED;
 
-                renderer.transfer_queue.dequeue_location = (renderer.transfer_queue.dequeue_location + operation->size) % renderer.transfer_queue.transfer_memory_size;
-                atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, -(s64)operation->size);
+                renderer.transfer_queue.dequeue_location = (renderer.transfer_queue.dequeue_location + operation->size + aligned_offset) % renderer.transfer_queue.transfer_memory_size;
+                atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, -(s64)(operation->size + aligned_offset));
             }
         }
 
