@@ -94,10 +94,9 @@ Renderer_Texture   renderer_create_texture_reference(u32 id, u32 width, u32 heig
 Renderer_Material  renderer_create_material_reference(u32 id);
 Renderer_Transform renderer_create_transform_reference(u32 id);
 
-void renderer_init_transfer_queue(Renderer_Transfer_Queue* queue, u8* memory, u64 memory_size);
-Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type);
-Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type, u64 transfer_size);
-void renderer_queue_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation* operation);
+Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operation_Type type);
+Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operation_Type type, u64 transfer_size);
+void renderer_queue_transfer(Renderer_Transfer_Operation* operation);
 
 void renderer_begin_frame(Frame_Parameters* frame_params);
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Material material, Renderer_Transform xform);

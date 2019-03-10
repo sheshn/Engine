@@ -227,7 +227,7 @@ void __stdcall WinMainCRTStartup()
     u64 memory_size = gigabytes(1);
     u8* platform_memory = allocate_memory(memory_size);
 
-    Memory_Arena platform_arena = {platform_memory, memory_size, 0};
+    Memory_Arena platform_arena = {platform_memory, memory_size};
 
     HWND window_handle = create_window();
     if (!window_handle)
@@ -260,6 +260,9 @@ void __stdcall WinMainCRTStartup()
 
     LARGE_INTEGER performance_frequency;
     QueryPerformanceFrequency(&performance_frequency);
+
+    Game_State game_state = {&platform_arena};
+    game_init(&game_state);
 
     running = true;
     while (running)

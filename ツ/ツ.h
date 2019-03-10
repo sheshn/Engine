@@ -27,6 +27,11 @@ struct Input
     v3 mouse_delta;
 };
 
+struct Game_State
+{
+    Memory_Arena* memory_arena;
+};
+
 struct Frame_Parameters
 {
     Frame_Parameters* next;
@@ -45,6 +50,7 @@ struct Frame_Parameters
     Camera camera;
 };
 
+void game_init(Game_State* game_state);
 void game_update(Frame_Parameters* frame_params);
 void game_render(Frame_Parameters* frame_params);
 void game_gpu(Frame_Parameters* frame_params);
