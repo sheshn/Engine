@@ -199,10 +199,14 @@ struct Frame_Uniforms
 #define MAX_DRAW_CALLS_PER_FRAME 16384
 #define MAX_INSTANCES_PER_FRAME  (MAX_DRAW_CALLS_PER_FRAME * 2)
 
-#define TRANSFER_MEMORY_SIZE      megabytes(32)
-#define MESH_MEMORY_SIZE          megabytes(256)
-#define STORAGE_64_MEMORY_SIZE    megabytes(256)
-#define TEXTURE_MEMORY_SIZE       megabytes(256)
+#define TRANSFER_MEMORY_SIZE megabytes(32)
+#define MESH_MEMORY_SIZE     megabytes(256)
+#define TEXTURE_MEMORY_SIZE  megabytes(256)
+
+#define MAX_MATERIALS         MAX_INSTANCES_PER_FRAME
+#define MAX_XFORMS            MAX_INSTANCES_PER_FRAME
+#define MATERIALS_MEMORY_SIZE (MAX_MATERIALS * sizeof(Material))
+#define XFORMS_MEMORY_SIZE    (MAX_XFORMS * sizeof(m4x4))
 
 #define DRAW_CALLS_MEMORY_SIZE     (MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
 #define DRAW_INSTANCE_MEMORY_SIZE  (MAX_INSTANCES_PER_FRAME * sizeof(Draw_Instance_Data))
@@ -260,9 +264,10 @@ struct Renderer
     VkBuffer            mesh_buffer;
     u64                 mesh_buffer_used;
 
-    Vulkan_Memory_Block storage_64_memory_block;
-    VkBuffer            storage_64_buffer;
-    u64                 storage_64_buffer_used;
+    Vulkan_Memory_Block storage_memory_block;
+    VkBuffer            storage_buffer;
+    u64                 storage_materials_offset;
+    u64                 storage_xforms_offset;
 
     Vulkan_Memory_Block texture_memory_block;
     u64                 texture_memory_used;
@@ -272,7 +277,6 @@ struct Renderer
     u32       max_2d_textures;
 
     Vulkan_Buffer*  mesh_buffers;
-    Vulkan_Buffer*  storage_64_buffers; // TODO: Separate Material and Transform
     Vulkan_Texture* textures;
 
     VkDescriptorSetLayout static_descriptor_set_layout;
@@ -454,27 +458,13 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     sampler_create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.texture_2d_sampler));
 
-    VkDescriptorSetLayoutBinding sampler_layout_binding = {};
-    sampler_layout_binding.binding = 0;
-    sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    sampler_layout_binding.descriptorCount = 1;
-    sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    sampler_layout_binding.pImmutableSamplers = &renderer.texture_2d_sampler;
+    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &renderer.texture_2d_sampler};
+    VkDescriptorSetLayoutBinding texture_2d_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures, VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding storage_material_layout_binding = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding storage_transform_layout_binding = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT};
 
-    VkDescriptorSetLayoutBinding texture_2d_layout_binding = {};
-    texture_2d_layout_binding.binding = 1;
-    texture_2d_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    texture_2d_layout_binding.descriptorCount = renderer.max_2d_textures;
-    texture_2d_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutBinding storage_64_layout_binding = {};
-    storage_64_layout_binding.binding = 2;
-    storage_64_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    storage_64_layout_binding.descriptorCount = 1;
-    storage_64_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_64_layout_binding};
-    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT, 0};
+    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding};
+    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT, 0, 0};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
     layout_binding_flags_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
@@ -503,9 +493,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkDescriptorPoolSize sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
     VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + 1};
-    VkDescriptorPoolSize storage_64_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolSize storage_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
     VkDescriptorPoolSize per_frame_uniforms_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES};
-    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size, storage_64_descriptor_pool_size, per_frame_uniforms_descriptor_pool_size};
+    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size, storage_descriptor_pool_size, per_frame_uniforms_descriptor_pool_size};
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {};
     descriptor_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -661,20 +651,30 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.mesh_buffer, &renderer.mesh_memory_block);
 
-    renderer.storage_64_buffer_used = 0;
-    buffer_create_info.size = STORAGE_64_MEMORY_SIZE;
+    renderer.storage_materials_offset = 0;
+    renderer.storage_xforms_offset = (MATERIALS_MEMORY_SIZE + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 aligned_storage_size = ((renderer.storage_xforms_offset + XFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    buffer_create_info.size = aligned_storage_size;
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.storage_64_buffer, &renderer.storage_64_memory_block);
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.storage_buffer, &renderer.storage_memory_block);
 
-    VkDescriptorBufferInfo buffer_info = {renderer.storage_64_buffer, 0, renderer.storage_64_memory_block.size};
-    VkWriteDescriptorSet storage_write = {};
-    storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    storage_write.dstSet = renderer.descriptor_set;
-    storage_write.dstBinding = 2;
-    storage_write.descriptorCount = 1;
-    storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    storage_write.pBufferInfo = &buffer_info;
-    vkUpdateDescriptorSets(vulkan_context.device, 1, &storage_write, 0, NULL);
+    VkDescriptorBufferInfo material_buffer_info = {renderer.storage_buffer, renderer.storage_materials_offset, MATERIALS_MEMORY_SIZE};
+    VkWriteDescriptorSet material_storage_write = {};
+    material_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    material_storage_write.dstSet = renderer.descriptor_set;
+    material_storage_write.dstBinding = 2;
+    material_storage_write.descriptorCount = 1;
+    material_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    material_storage_write.pBufferInfo = &material_buffer_info;
+
+    VkDescriptorBufferInfo xform_buffer_info = {renderer.storage_buffer, renderer.storage_xforms_offset, XFORMS_MEMORY_SIZE};
+    VkWriteDescriptorSet xform_storage_write = material_storage_write;
+    xform_storage_write.dstBinding = 3;
+    xform_storage_write.descriptorCount = 1;
+    xform_storage_write.pBufferInfo = &xform_buffer_info;
+
+    VkWriteDescriptorSet storage_writes[] = {material_storage_write, xform_storage_write};
+    vkUpdateDescriptorSets(vulkan_context.device, array_count(storage_writes), storage_writes, 0, NULL);
 
     // NOTE: Using BC7 format for all 2D textures for now
     renderer.texture_2d_format = VK_FORMAT_BC7_UNORM_BLOCK;
@@ -700,7 +700,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // TODO: How many buffer slots should be reserved?
     renderer.mesh_buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
-    renderer.storage_64_buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
     renderer.textures = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Texture, renderer.max_2d_textures);
 
     VkCommandPoolCreateInfo command_pool_create_info = {};
@@ -804,51 +803,49 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     }
 
     // TODO: Remove this test code
-    Renderer_Buffer xform_buffer = renderer_create_buffer_reference(0);
-    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER, 64);
+    Renderer_Transform xform_buffer = renderer_create_transform_reference(0);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM);
     if (op)
     {
-        op->buffer = xform_buffer;
-        v4* mem = (v4*)op->memory;
-        mem[0] = v4{1, 0, 0, 0};
-        mem[1] = v4{0, 1, 0, 0};
-        mem[2] = v4{0, 0, 1, 0};
-        mem[3] = v4{0.1f, 0.1f, 0, 1};
+        op->transform = xform_buffer;
+        m4x4* mem = (m4x4*)op->memory;
+        *mem = identity();
+        mem->columns[3] = v4{0.1f, 0.1f, 0, 1};
 
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
-    Renderer_Buffer material_buffer = renderer_create_buffer_reference(1);
-    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER, 64);
+    Renderer_Material material_buffer = renderer_create_material_reference(0);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL);
     if (op)
     {
-        op->buffer = material_buffer;
-        u32* mem = (u32*)op->memory;
-        *mem = 0;
+        op->material = material_buffer;
+        Material* mem = (Material*)op->memory;
+        mem->albedo_texture_id = 0;
+        mem->base_color = v4{1.0f, 0.0f, 0.0f, 1.0f};
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
-    Renderer_Buffer xform_buffer2 = renderer_create_buffer_reference(2);
-    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER, 64);
+    Renderer_Transform xform_buffer2 = renderer_create_transform_reference(1);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM);
     if (op)
     {
-        op->buffer = xform_buffer2;
-        v4* mem = (v4*)op->memory;
-        mem[0] = v4{1, 0, 0, 0};
-        mem[1] = v4{0, 1, 0, 0};
-        mem[2] = v4{0, 0, 1, 0};
-        mem[3] = v4{-0.1f, -0.1f, 0, 1};
+        op->transform = xform_buffer2;
+        m4x4* mem = (m4x4*)op->memory;
+        *mem = identity();
+        mem->columns[3] = v4{-0.1f, -0.1f, 0, 1};
 
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
-    Renderer_Buffer material_buffer2 = renderer_create_buffer_reference(3);
-    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER, 64);
+    Renderer_Material material_buffer2 = renderer_create_material_reference(1);
+    op = renderer_request_transfer(&renderer.transfer_queue, RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL);
     if (op)
     {
-        op->buffer = material_buffer2;
-        u32* mem = (u32*)op->memory;
-        *mem = 1;
+        op->material = material_buffer2;
+        Material* mem = (Material*)op->memory;
+        mem->albedo_texture_id = 1;
+        mem->base_color = v4{0.5f, 0.1f, 0.3f, 1.0f};
         renderer_queue_transfer(&renderer.transfer_queue, op);
     }
 
@@ -1101,10 +1098,13 @@ internal void resolve_pending_transfer_operations()
         u64 mesh_buffer_dst_offset = renderer.mesh_buffer_used;
         b32 create_new_mesh_buffer_copy = true;
 
-        VkBufferCopy* storage_64_buffer_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferCopy, transfer_operations);
-        u32 storage_64_copy_count = 0;
-        u64 storage_64_buffer_dst_offset = renderer.storage_64_buffer_used;
-        b32 create_new_storage_64_buffer_copy = true;
+        VkBufferCopy* material_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferCopy, transfer_operations);
+        u64 material_copy_count = 0;
+        s32 last_material_index = S32_MIN;
+
+        VkBufferCopy* xform_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferCopy, transfer_operations);
+        u64 xform_copy_count = 0;
+        s32 last_xform_index = S32_MIN;
 
         // TODO: How many VkBufferImageCopies should we actually get?
         VkBufferImageCopy* texture_copies = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferImageCopy, transfer_operations * 16);
@@ -1134,7 +1134,8 @@ internal void resolve_pending_transfer_operations()
                     size = operation->size - renderer.transfer_queue.transfer_memory_size - renderer.transfer_queue.dequeue_location;
                     src_offset = 0;
                     create_new_mesh_buffer_copy = true;
-                    create_new_storage_64_buffer_copy = true;
+                    last_material_index = S32_MIN;
+                    last_xform_index = S32_MIN;
                 }
 
                 switch (operation->type)
@@ -1161,33 +1162,50 @@ internal void resolve_pending_transfer_operations()
                     // TODO: Reuse buffer slot. We also need to free the buffer at this slot if it was previously used.
                     renderer.mesh_buffers[operation->buffer.id].offset = (u32)renderer.mesh_buffer_used;
                     renderer.mesh_buffer_used += size;
-                    create_new_storage_64_buffer_copy = true;
+                    last_material_index = S32_MIN;
+                    last_xform_index = S32_MIN;
                 } break;
-                // TODO: Transfer specific things (Transform, Material) instead of 'STORAGE_64'. Seems like a better idea API wise.
-                case RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER:
-                {
-                    if (create_new_storage_64_buffer_copy)
-                    {
-                        if (storage_64_copy_count > 0)
-                        {
-                            storage_64_buffer_dst_offset += storage_64_buffer_copies[storage_64_copy_count - 1].size;
-                        }
-                        storage_64_buffer_copies[storage_64_copy_count].srcOffset = src_offset;
-                        storage_64_buffer_copies[storage_64_copy_count].dstOffset = storage_64_buffer_dst_offset;
-                        storage_64_buffer_copies[storage_64_copy_count].size = 0;
-                        storage_64_copy_count++;
 
-                        create_new_storage_64_buffer_copy = false;
+                case RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL:
+                {
+                    assert(size == sizeof(Material));
+                    if (last_material_index + 1 != operation->material.id)
+                    {
+                        material_copies[material_copy_count].srcOffset = src_offset;
+                        material_copies[material_copy_count].dstOffset = renderer.storage_materials_offset + operation->material.id * size;
+                        material_copies[material_copy_count].size = 0;
+                        material_copy_count++;
+
+                        last_material_index = operation->material.id;
                     }
 
-                    VkBufferCopy* buffer_copy = &storage_64_buffer_copies[storage_64_copy_count - 1];
-                    buffer_copy->size += size;
+                    VkBufferCopy* material_copy = &material_copies[material_copy_count - 1];
+                    material_copy->size += size;
 
-                    // TODO: Reuse buffer slot. We also need to free the buffer at this slot if it was previously used.
-                    renderer.storage_64_buffers[operation->buffer.id].offset = (u32)renderer.storage_64_buffer_used;
-                    renderer.storage_64_buffer_used += size;
                     create_new_mesh_buffer_copy = true;
+                    last_xform_index = S32_MIN;
                 } break;
+
+                case RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM:
+                {
+                    assert(size == sizeof(m4x4));
+                    if (last_xform_index + 1 != operation->transform.id)
+                    {
+                        xform_copies[xform_copy_count].srcOffset = src_offset;
+                        xform_copies[xform_copy_count].dstOffset = renderer.storage_xforms_offset + operation->transform.id * size;
+                        xform_copies[xform_copy_count].size = 0;
+                        xform_copy_count++;
+
+                        last_xform_index = operation->transform.id;
+                    }
+
+                    VkBufferCopy* xform_copy = &xform_copies[xform_copy_count - 1];
+                    xform_copy->size += size;
+
+                    create_new_mesh_buffer_copy = true;
+                    last_material_index = S32_MIN;
+                } break;
+
                 case RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE:
                 {
                     VkImageCreateInfo image_create_info = {};
@@ -1258,7 +1276,10 @@ internal void resolve_pending_transfer_operations()
                     vkUpdateDescriptorSets(vulkan_context.device, 1, &texture_write, 0, NULL);
 
                     renderer.texture_memory_used += buffer_offset - src_offset;
+
                     create_new_mesh_buffer_copy = true;
+                    last_material_index = S32_MIN;
+                    last_xform_index = S32_MIN;
                 } break;
                 }
 
@@ -1269,7 +1290,7 @@ internal void resolve_pending_transfer_operations()
             }
         }
 
-        if (mesh_copy_count > 0 || texture_barrier_count > 0 || storage_64_copy_count > 0)
+        if (mesh_copy_count > 0 || texture_barrier_count > 0 || material_copy_count > 0 || xform_copy_count)
         {
             vkResetFences(vulkan_context.device, 1, &renderer.transfer_command_buffer_fence);
             vkResetCommandPool(vulkan_context.device, renderer.transfer_command_pool, 0);
@@ -1284,16 +1305,22 @@ internal void resolve_pending_transfer_operations()
             {
                 vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.mesh_buffer, mesh_copy_count, mesh_buffer_copies);
             }
-            if (storage_64_copy_count > 0)
+            if (material_copy_count > 0)
             {
-                vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.storage_64_buffer, storage_64_copy_count, storage_64_buffer_copies);
+                vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.storage_buffer, material_copy_count, material_copies);
+            }
+            if (xform_copy_count > 0)
+            {
+                vkCmdCopyBuffer(renderer.transfer_command_buffer, renderer.transfer_buffer, renderer.storage_buffer, xform_copy_count, xform_copies);
             }
 
             VkBufferMemoryBarrier* buffer_barriers = NULL;
-            if (mesh_copy_count > 0 || storage_64_copy_count > 0)
+            if (mesh_copy_count > 0 || material_copy_count > 0 || xform_copy_count > 0)
             {
-                buffer_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferMemoryBarrier, mesh_copy_count + storage_64_copy_count);
-                for (u32 i = 0; i < mesh_copy_count; ++i)
+                buffer_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkBufferMemoryBarrier, mesh_copy_count + material_copy_count + xform_copy_count);
+
+                u32 i = 0;
+                for (; i < mesh_copy_count; ++i)
                 {
                     buffer_barriers[i] = {};
                     buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -1305,7 +1332,7 @@ internal void resolve_pending_transfer_operations()
                     buffer_barriers[i].offset = mesh_buffer_copies[i].dstOffset;
                     buffer_barriers[i].size = mesh_buffer_copies[i].size;
                 }
-                for (u32 i = mesh_copy_count; i < mesh_copy_count + storage_64_copy_count; ++i)
+                for (; i < mesh_copy_count + material_copy_count; ++i)
                 {
                     buffer_barriers[i] = {};
                     buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -1313,9 +1340,21 @@ internal void resolve_pending_transfer_operations()
                     buffer_barriers[i].dstAccessMask = 0;
                     buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
                     buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
-                    buffer_barriers[i].buffer = renderer.storage_64_buffer;
-                    buffer_barriers[i].offset = storage_64_buffer_copies[i - mesh_copy_count].dstOffset;
-                    buffer_barriers[i].size = storage_64_buffer_copies[i - mesh_copy_count].size;
+                    buffer_barriers[i].buffer = renderer.storage_buffer;
+                    buffer_barriers[i].offset = material_copies[i - mesh_copy_count].dstOffset;
+                    buffer_barriers[i].size = material_copies[i - mesh_copy_count].size;
+                }
+                for (; i < mesh_copy_count + material_copy_count + xform_copy_count; ++i)
+                {
+                    buffer_barriers[i] = {};
+                    buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    buffer_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    buffer_barriers[i].dstAccessMask = 0;
+                    buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
+                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    buffer_barriers[i].buffer = renderer.storage_buffer;
+                    buffer_barriers[i].offset = xform_copies[i - mesh_copy_count - material_copy_count].dstOffset;
+                    buffer_barriers[i].size = xform_copies[i - mesh_copy_count - material_copy_count].size;
                 }
             }
 
@@ -1340,7 +1379,7 @@ internal void resolve_pending_transfer_operations()
                 }
             }
 
-            vkCmdPipelineBarrier(renderer.transfer_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, mesh_copy_count + storage_64_copy_count, buffer_barriers, texture_barrier_count, texture_barriers);
+            vkCmdPipelineBarrier(renderer.transfer_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, mesh_copy_count + material_copy_count + xform_copy_count, buffer_barriers, texture_barrier_count, texture_barriers);
 
             vkEndCommandBuffer(renderer.transfer_command_buffer);
 

@@ -24,9 +24,8 @@ struct Material
     u32 normal_texture_index;
     u32 roughness_texture_index;
     u32 metallic_texture_index;
-    v4  base_color;
 
-    f32 reserved[8];
+    v4  base_color;
 };
 
 struct Transform
@@ -41,7 +40,8 @@ struct Frame_Uniforms
 
 layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
 layout(set = 0, binding = 1) uniform texture2D textures_2d[];
-layout(set = 0, binding = 2) buffer storage_64_buffer { Data_64 storage_64[]; };
+layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
+layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
 layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
 layout(location = 0) flat in uv2 in_instance_data;
@@ -49,13 +49,8 @@ layout(location = 1) in vec2 in_uv;
 
 layout(location = 0) out vec4 out_color;
 
-Material data64_to_material(Data_64 data)
-{
-    return Material(floatBitsToUint(data.data[0]), floatBitsToUint(data.data[1]), floatBitsToUint(data.data[2]), floatBitsToUint(data.data[3]), v4(data.data[4], data.data[5], data.data[6], data.data[7]), f32[8](data.data[8], data.data[9], data.data[10], data.data[11], data.data[12], data.data[13], data.data[14], data.data[15]));
-}
-
 void main()
 {
-    Material material = data64_to_material(storage_64[in_instance_data.y]);
-    out_color = texture(sampler2D(textures_2d[material.albedo_texture_index], texture_2d_sampler), in_uv);
+    Material material = materials[in_instance_data.y];
+    out_color = texture(sampler2D(textures_2d[material.albedo_texture_index], texture_2d_sampler), in_uv) * material.base_color;
 }

@@ -23,10 +23,10 @@ struct Vertex
 
 struct Material
 {
-    Renderer_Texture albedo;
-    Renderer_Texture normal;
-    Renderer_Texture roughness;
-    Renderer_Texture metallic;
+    u32 albedo_texture_id;
+    u32 normal_texture_id;
+    u32 roughness_texture_id;
+    u32 metallic_texture_id;
 
     v4 base_color;
 };
@@ -44,7 +44,6 @@ struct Transform
 enum Renderer_Transfer_Operation_Type
 {
     RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER,
-    RENDERER_TRANSFER_OPERATION_TYPE_STORAGE_64_BUFFER,
     RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE,
     RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL,
     RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM
@@ -90,10 +89,13 @@ struct Renderer_Transfer_Queue
 };
 
 // TODO: Consider removing 'renderer' prefix from all of these
-Renderer_Buffer  renderer_create_buffer_reference(u32 id);
-Renderer_Texture renderer_create_texture_reference(u32 id, u32 width, u32 height);
+Renderer_Buffer    renderer_create_buffer_reference(u32 id);
+Renderer_Texture   renderer_create_texture_reference(u32 id, u32 width, u32 height);
+Renderer_Material  renderer_create_material_reference(u32 id);
+Renderer_Transform renderer_create_transform_reference(u32 id);
 
 void renderer_init_transfer_queue(Renderer_Transfer_Queue* queue, u8* memory, u64 memory_size);
+Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type);
 Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type, u64 transfer_size);
 void renderer_queue_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation* operation);
 

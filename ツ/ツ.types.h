@@ -20,6 +20,9 @@ typedef u32      b32;
 #define U32_MAX 0xFFFFFFFF
 #define U64_MAX 0xFFFFFFFFFFFFFFFFUL
 
+#define S32_MAX 0xFFFFFFFF
+#define S32_MIN (-S32_MAX)
+
 union v2
 {
     float data[2];

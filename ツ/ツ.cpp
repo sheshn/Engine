@@ -32,10 +32,10 @@ void game_render(Frame_Parameters* frame_params)
     if (frame_params->frame_number > 3)
     {
         Renderer_Buffer buffer = renderer_create_buffer_reference(0);
-        Renderer_Buffer xform = renderer_create_buffer_reference(0);
-        Renderer_Buffer material = renderer_create_buffer_reference(1);
-        Renderer_Buffer xform2 = renderer_create_buffer_reference(2);
-        Renderer_Buffer material2 = renderer_create_buffer_reference(3);
+        Renderer_Transform xform = renderer_create_transform_reference(0);
+        Renderer_Material material = renderer_create_material_reference(0);
+        Renderer_Transform xform2 = renderer_create_transform_reference(1);
+        Renderer_Material material2 = renderer_create_material_reference(1);
 
         Renderer_Material materials[] = {material, material2};
         Renderer_Transform transforms[] = {xform, xform2};

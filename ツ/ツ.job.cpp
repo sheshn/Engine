@@ -351,7 +351,7 @@ FIBER_PROC(fiber_proc)
         Job job;
         if (!dequeue_job(&scheduler.worker_threads_queue, &job))
         {
-            // TODO: See if there is a better way to fix putting the thread to sleep when there is no work to do!
+            // TODO: Fix this!! See if there is a better way to fix putting the thread to sleep when there is no work to do!
             if (++retry_count >= 100)
             {
                 semaphore_wait(scheduler.worker_threads_semaphore_handle);

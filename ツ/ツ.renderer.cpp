@@ -11,9 +11,27 @@ Renderer_Texture renderer_create_texture_reference(u32 id, u32 width, u32 height
     return texture;
 }
 
+Renderer_Material renderer_create_material_reference(u32 id)
+{
+    Renderer_Material material = {id};
+    return material;
+}
+
+Renderer_Transform renderer_create_transform_reference(u32 id)
+{
+    Renderer_Transform xform = {id};
+    return xform;
+}
+
 void renderer_init_transfer_queue(Renderer_Transfer_Queue* queue, u8* memory, u64 memory_size)
 {
     *queue = {memory, memory_size};
+}
+
+Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type)
+{
+    assert(type == RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL || type == RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM);
+    return renderer_request_transfer(queue, type, type == RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL ? sizeof(Material) : sizeof(m4x4));
 }
 
 Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Queue* queue, Renderer_Transfer_Operation_Type type, u64 transfer_size)

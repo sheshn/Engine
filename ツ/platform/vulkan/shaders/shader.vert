@@ -25,8 +25,6 @@ struct Material
     u32 roughness_texture_index;
     u32 metallic_texture_index;
     v4  base_color;
-
-    f32 reserved[8];
 };
 
 struct Transform
@@ -39,7 +37,7 @@ struct Frame_Uniforms
     m4x4 view_projection;
 };
 
-layout(set = 0, binding = 2) buffer storage_64_buffer { Data_64 storage_64[]; };
+layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
 layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
 layout(location = 0) in uv2 in_instance_data;
@@ -53,19 +51,9 @@ out gl_PerVertex
     v4 gl_Position;
 };
 
-Transform data64_to_xform(Data_64 data)
-{
-    return Transform(
-        m4x4(data.data[0],  data.data[1],  data.data[2],  data.data[3],
-             data.data[4],  data.data[5],  data.data[6],  data.data[7],
-             data.data[8],  data.data[9],  data.data[10], data.data[11],
-             data.data[12], data.data[13], data.data[14], data.data[15])
-    );
-}
-
 void main()
 {
-    Transform xform = data64_to_xform(storage_64[in_instance_data.x]);
+    Transform xform = xforms[in_instance_data.x];
 
     v4 position = frame_uniforms.view_projection * xform.model * v4(in_position.xyz, 1.0);
     gl_Position = v4(position.xy, 0.0, 1.0);
