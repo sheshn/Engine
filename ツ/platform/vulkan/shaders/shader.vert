@@ -13,11 +13,6 @@
 #define uv2 uvec2
 #define m4x4 mat4
 
-struct Data_64
-{
-    f32 data[16];
-};
-
 struct Material
 {
     u32 albedo_texture_index;

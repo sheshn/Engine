@@ -1,5 +1,3 @@
-#include "ツ.vulkan.h"
-
 #define VK_FUNCTION(function) PFN_##function function;
     VK_FUNCTIONS_DEBUG
     VK_FUNCTIONS_INSTANCE
@@ -722,7 +720,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     renderer.transfer_queue = {renderer.transfer_memory_block.base, renderer.transfer_memory_block.size};
 
-    // TODO: Record command buffers using the job system
     command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
     VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.graphics_command_pool));
 
