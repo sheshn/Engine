@@ -572,31 +572,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     color_blend_state_create_info.attachmentCount = 1;
     color_blend_state_create_info.pAttachments = &color_blend_attachment;
 
-    memory_arena_marker = memory_arena_get_marker(vulkan_context.memory_arena);
-
-    // TODO: Use final read file implementation
-    u8* vertex_shader_code;
-    u64 vertex_shader_code_size;
-    b32 read_result = DEBUG_read_file("shaders/vertex.spv", vulkan_context.memory_arena, &vertex_shader_code_size, &vertex_shader_code);
-    assert(read_result);
-
     VkShaderModule vertex_shader_module, fragment_shader_module;
-    VkShaderModuleCreateInfo shader_module_create_info = {};
-    shader_module_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_module_create_info.codeSize = vertex_shader_code_size;
-    shader_module_create_info.pCode = (u32*)vertex_shader_code;
-    VK_CALL(vkCreateShaderModule(vulkan_context.device, &shader_module_create_info, NULL, &vertex_shader_module));
-
-    u8* fragment_shader_code;
-    u64 fragment_shader_code_size;
-    read_result = DEBUG_read_file("shaders/fragment.spv", vulkan_context.memory_arena, &fragment_shader_code_size, &fragment_shader_code);
-    assert(read_result);
-
-    shader_module_create_info.codeSize = fragment_shader_code_size;
-    shader_module_create_info.pCode = (u32*)fragment_shader_code;
-    VK_CALL(vkCreateShaderModule(vulkan_context.device, &shader_module_create_info, NULL, &fragment_shader_module));
-
-    memory_arena_free_to_marker(vulkan_context.memory_arena, memory_arena_marker);
+    VK_CALL(vkCreateShaderModule(vulkan_context.device, &default_vertex_shader_create_info, NULL, &vertex_shader_module));
+    VK_CALL(vkCreateShaderModule(vulkan_context.device, &default_fragment_shader_create_info, NULL, &fragment_shader_module));
 
     VkPipelineShaderStageCreateInfo vertex_stage_create_info = {};
     vertex_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

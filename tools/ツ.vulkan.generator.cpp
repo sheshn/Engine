@@ -1,3 +1,7 @@
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
@@ -7,6 +11,7 @@
 #include <string>
 #include <locale>
 #include <codecvt>
+#include <algorithm>
 
 #include "../ツ/ツ.types.h"
 
@@ -40,7 +45,13 @@ internal std::string vulkan_function_list_header = R"(
     VK_FUNCTIONS_DEBUG
 )";
 
-char* read_file(wchar_t* filepath)
+internal std::string embedded_shaders_header_text = R"(
+/*****************
+ Embedded Shaders
+ *****************/
+)";
+
+char* read_file(const wchar_t* filepath, u64* size_out = NULL)
 {
     FILE* file = _wfopen(filepath, L"rb");
     if (!file)
@@ -58,10 +69,15 @@ char* read_file(wchar_t* filepath)
     fclose(file);
     result[size] = 0;
 
+    if (size_out)
+    {
+        *size_out = size;
+    }
+
     return result;
 }
 
-void write_file(wchar_t* filepath, const char* contents)
+void write_file(const wchar_t* filepath, const char* contents)
 {
     FILE* file = _wfopen(filepath, L"w");
     if (!file)
@@ -72,6 +88,24 @@ void write_file(wchar_t* filepath, const char* contents)
 
     fprintf(file, "%s", contents);
     fclose(file);
+}
+
+std::vector<std::wstring> find_files_in_directory(std::wstring directory, std::wstring extension)
+{
+    WIN32_FIND_DATA file_info;
+    HANDLE find_handle = FindFirstFile((directory + L"\\" + extension).c_str(), &file_info);
+
+    std::vector<std::wstring> result;
+    if (find_handle != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            result.push_back(directory + L"\\" + file_info.cFileName);
+        }
+        while (FindNextFile(find_handle, &file_info));
+        FindClose(find_handle);
+    }
+    return result;
 }
 
 enum Token_Type
@@ -623,9 +657,9 @@ void parse_vulkan_macro_usage(Tokenizer* tokenizer, std::string macro)
     }
 }
 
-void parse_vulkan_header(wchar_t* filepath)
+void parse_vulkan_header(std::wstring filepath)
 {
-    char* vulkan_header = read_file(filepath);
+    char* vulkan_header = read_file(filepath.c_str());
 
     Tokenizer tokenizer = {vulkan_header};
 
@@ -976,9 +1010,9 @@ std::string vulkan_function_to_string(Function f)
     return result;
 }
 
-std::string generate_our_vulkan_header(wchar_t* input_path)
+std::string generate_our_vulkan_header(std::wstring input_path)
 {
-    char* vulkan_usage_code = read_file(input_path);
+    char* vulkan_usage_code = read_file(input_path.c_str());
 
     Tokenizer tokenizer = {vulkan_usage_code};
     add_needed_items(&tokenizer);
@@ -1058,16 +1092,319 @@ std::string generate_our_vulkan_header(wchar_t* input_path)
     return generated_header;
 }
 
+struct Shader_Layout
+{
+    std::string name;
+    u64 layout_index;
+    u64 open_brace_index;
+    u64 close_brace_index;
+};
+
+void parse_shader_layout(Tokenizer* tokenizer, char* shader_code, u64 layout_index, std::unordered_map<std::string, Shader_Layout>* shader_layouts)
+{
+    Shader_Layout layout;
+    layout.layout_index = layout_index;
+
+    Token name = get_token(tokenizer);
+    if (name.type == TOKEN_TYPE_IDENTIFIER)
+    {
+        layout.name = std::string(name.text, name.length);
+
+        Token open_brace_token = get_token(tokenizer);
+        if (open_brace_token.type == TOKEN_TYPE_OPEN_BRACE)
+        {
+            layout.open_brace_index = open_brace_token.text - shader_code;
+
+            u32 brace_count = 1;
+            while (true)
+            {
+                Token member = get_token(tokenizer);
+                if (member.type == TOKEN_TYPE_CLOSE_BRACE)
+                {
+                    brace_count--;
+                }
+                else if (member.type == TOKEN_TYPE_OPEN_BRACE)
+                {
+                    brace_count++;
+                }
+
+                if (brace_count == 0)
+                {
+                    layout.close_brace_index = member.text - shader_code;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        shader_layouts->insert({layout.name, layout});
+    }
+    else
+    {
+        fprintf(stderr, "ERROR: Missing semicolon for layout: %s\n", layout.name.c_str());
+    }
+}
+
+struct Shader_Function
+{
+    std::string shader_type;
+    std::string name;
+    u64         function_start_index;
+    u64         void_index;
+    u64         open_brace_index;
+    u64         close_brace_index;
+
+    std::vector<std::string> layouts;
+};
+
+std::vector<Shader_Function> shader_functions;
+
+void parse_shader(Tokenizer* tokenizer, char* shader_code, std::string shader_type, u64 function_start_index, std::vector<Shader_Function>* shader_functions)
+{
+    Shader_Function function;
+    function.shader_type = shader_type;
+    function.function_start_index = function_start_index;
+
+    while (true)
+    {
+        Token token = get_token(tokenizer);
+        if (token.type == TOKEN_TYPE_CLOSE_PARENTHESIS)
+        {
+            break;
+        }
+        else if (token.type == TOKEN_TYPE_COMMA)
+        {
+            continue;
+        }
+
+        std::string layout_name = std::string(token.text, token.length);
+        function.layouts.push_back(layout_name);
+    }
+
+    Token void_token = get_token(tokenizer);
+    if (token_equals(void_token, "void"))
+    {
+        function.void_index = void_token.text - shader_code;
+
+        Token name = get_token(tokenizer);
+        if (name.type == TOKEN_TYPE_IDENTIFIER && eat_token(tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS) && eat_token(tokenizer, TOKEN_TYPE_CLOSE_PARENTHESIS))
+        {
+            function.name = std::string(name.text, name.length);
+
+            Token open_brace_token = get_token(tokenizer);
+            if (open_brace_token.type == TOKEN_TYPE_OPEN_BRACE)
+            {
+                function.open_brace_index = open_brace_token.text - shader_code;
+
+                u32 brace_count = 1;
+                while (true)
+                {
+                    Token t = get_token(tokenizer);
+                    if (t.type == TOKEN_TYPE_CLOSE_BRACE)
+                    {
+                        brace_count--;
+                    }
+                    else if (t.type == TOKEN_TYPE_OPEN_BRACE)
+                    {
+                        brace_count++;
+                    }
+
+                    if (brace_count == 0)
+                    {
+                        function.close_brace_index = t.text - shader_code;
+                        shader_functions->push_back(function);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+std::wstring get_shader_file_extension(std::string shader_type)
+{
+    std::wstring ext = L"";
+    if (shader_type == "vertex")
+    {
+        ext = L"vert";
+    }
+    else if (shader_type == "fragment")
+    {
+        ext = L"frag";
+    }
+    return ext;
+}
+
+char hex_charset[] = "0123456789ABCDEF";
+
+std::string bytes_to_string(char* bytes, u64 size)
+{
+    std::string result = "{";
+    for (u64 i = 0; i < size; ++i)
+    {
+        char c = bytes[i];
+        result += "0x";
+        result += hex_charset[(c & 0xF0) >> 4];
+        result += hex_charset[c & 0xF];
+        result += ',';
+    }
+    result[result.size() - 1] = '}';
+    return result;
+}
+
+std::string compile_shaders(std::wstring compiler_path, std::wstring optimizer_path, char* shader_code, std::vector<Shader_Function> shader_functions, std::unordered_map<std::string, Shader_Layout> shader_layouts)
+{
+    std::string result = "";
+    for (u64 i = 0; i < shader_functions.size(); ++i)
+    {
+        std::string code = std::string(shader_code);
+        std::unordered_map<std::string, Shader_Layout> layouts = shader_layouts;
+
+        // TODO: Should probably check for duplicate function names!
+        Shader_Function function = shader_functions[i];
+        for (u64 j = 0; j < function.layouts.size(); ++j)
+        {
+            if (shader_layouts.find(function.layouts[j]) == shader_layouts.end() || shader_layouts[function.layouts[j]].layout_index > function.function_start_index)
+            {
+                fprintf(stderr, "ERROR: %s needs undefined layout: %s\n", function.name.c_str(), function.layouts[j].c_str());
+            }
+            else
+            {
+                Shader_Layout layout = shader_layouts[function.layouts[j]];
+                code[layout.layout_index] = '/';
+                code[layout.layout_index + 1] = '/';
+                code[layout.open_brace_index] = ' ';
+                code[layout.close_brace_index] = ' ';
+                code[layout.close_brace_index + 1] = ' ';
+
+                layouts.erase(function.layouts[j]);
+            }
+        }
+
+        for (auto it : layouts)
+        {
+            Shader_Layout layout = it.second;
+            for (u64 index = layout.layout_index; index <= layout.close_brace_index + 1; ++index)
+            {
+                if (!is_whitespace(code[index]))
+                {
+                    code[index] = ' ';
+                }
+            }
+        }
+
+        for (u64 j = 0; j < shader_functions.size(); ++j)
+        {
+            if (i != j)
+            {
+                Shader_Function f = shader_functions[j];
+                for (u64 index = f.function_start_index; index <= f.close_brace_index; ++index)
+                {
+                    if (!is_whitespace(code[index]))
+                    {
+                        code[index] = ' ';
+                    }
+                }
+            }
+        }
+
+        code.replace(function.void_index + 5, function.name.size(), "main");
+        code.replace(function.function_start_index, function.void_index - function.function_start_index, "");
+
+        std::wstring filename = std::wstring(function.name.begin(), function.name.end()) + L".tsd";
+        write_file(filename.c_str(), code.c_str());
+
+        std::wstring shader_type = get_shader_file_extension(function.shader_type);
+        if (!shader_type.empty())
+        {
+            std::wstring spirv_filename = std::wstring(function.name.begin(), function.name.end()) + L".spv";
+            _wsystem((compiler_path + L" -t -V --target-env vulkan1.1 -S " + shader_type + L" -o " + spirv_filename + L" " + filename).c_str());
+            _wsystem((optimizer_path + L" -O " + spirv_filename + L" -o " + spirv_filename).c_str());
+
+            u64 code_size;
+            char* spirv_code = read_file(spirv_filename.c_str(), &code_size);
+            result += "internal u8 " + function.name + "_code[] = " + bytes_to_string(spirv_code, code_size) + ";\n";
+            result += "internal VkShaderModuleCreateInfo " + function.name + "_create_info = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, " + std::to_string(code_size) + ", (u32*)" + function.name + "_code" + "};\n";
+        }
+        else
+        {
+            fprintf(stderr, "Unsupported shader_type: %s\n", function.shader_type.c_str());
+        }
+    }
+
+    _wsystem(L"del *.spv *.tsd");
+    return result;
+}
+
+std::string compile_shader_file(std::wstring compiler_path, std::wstring optimizer_path, std::wstring filepath)
+{
+    char* shader_code = read_file(filepath.c_str());
+    Tokenizer tokenizer = {shader_code};
+
+    std::vector<Shader_Function> shader_functions;
+    std::unordered_map<std::string, Shader_Layout> shader_layouts;
+
+    b32 parsing = true;
+    while (parsing)
+    {
+        Token token = get_token(&tokenizer);
+        switch (token.type)
+        {
+        case TOKEN_TYPE_END_OF_STREAM:
+            parsing = false;
+            break;
+        case TOKEN_TYPE_UNKNOWN:
+            break;
+        case TOKEN_TYPE_IDENTIFIER:
+        {
+            if (token_equals(token, "layout"))
+            {
+                parse_shader_layout(&tokenizer, shader_code, token.text - shader_code, &shader_layouts);
+            }
+            else if ((token_equals(token, "vertex") || token_equals(token, "fragment")) && eat_token(&tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS))
+            {
+                parse_shader(&tokenizer, shader_code, std::string(token.text, token.length), token.text - shader_code, &shader_functions);
+            }
+        } break;
+        }
+    }
+
+    return compile_shaders(compiler_path, optimizer_path, shader_code, shader_functions, shader_layouts);
+}
+
+std::string generate_shaders(std::wstring shader_directory, std::wstring shader_tools_path)
+{
+    std::wstring compiler_path = shader_tools_path + L"/glslangValidator.exe";
+    std::wstring optimizer_path = shader_tools_path + L"/spirv-opt.exe";
+
+    std::string generated_shaders = "";
+
+    std::vector<std::wstring> shader_files = find_files_in_directory(shader_directory, L"*.tsd*");
+    for (u64 i = 0; i < shader_files.size(); ++i)
+    {
+        std::wstring shader_file_path = shader_files[i];
+
+        wprintf(L"Compiling %s\n", shader_file_path.c_str());
+        generated_shaders += compile_shader_file(compiler_path, optimizer_path, shader_file_path);
+    }
+
+    return generated_shaders;
+}
+
 int wmain(int argc, wchar_t* argv[])
 {
-    wchar_t* vulkan_header_path = argv[1];
-    wchar_t* input_path = argv[2];
-    wchar_t* output_path = argv[3];
+    std::wstring vulkan_sdk_path = std::wstring(argv[1]);
+    std::wstring input_path = std::wstring(argv[2]);
+    std::wstring shader_directory = std::wstring(argv[3]);
+    std::wstring output_path = std::wstring(argv[4]);
 
-    parse_vulkan_header(vulkan_header_path);
+    parse_vulkan_header(vulkan_sdk_path + L"/Include/vulkan/vulkan_core.h");
 
     std::string generated_header = generate_our_vulkan_header(input_path);
-    write_file(output_path, generated_header.c_str());
+    generated_header += "\n" + embedded_shaders_header_text + "\n" + generate_shaders(shader_directory, vulkan_sdk_path + L"/Bin");
 
+    write_file(output_path.c_str(), generated_header.c_str());
     return 0;
 }
