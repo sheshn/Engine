@@ -3,6 +3,83 @@
 
 #include "../ツ/ツ.common.h"
 #include "../ツ/ツ.math.h"
+#include "ツ.tokenizer.h"
+
+#define JSON_STRING(text) "\""#text"\""
+
+struct String
+{
+    char* text;
+    u64   length;
+};
+
+u8* read_file(wchar_t* filepath)
+{
+    FILE* file = _wfopen(filepath, L"rb");
+    if (!file)
+    {
+        fprintf(stderr, "%ws not found :(\n", filepath);
+        exit(EXIT_FAILURE);
+    }
+
+    fseek(file, 0, SEEK_END);
+    u64 size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    u8* result = (u8*)malloc(size + 1);
+    fread(result, size, 1, file);
+    fclose(file);
+    result[size] = 0;
+
+    return result;
+}
+
+void write_file(wchar_t* filepath, u8* contents, u32 size)
+{
+    FILE* file = _wfopen(filepath, L"wb");
+    if (!file)
+    {
+        fprintf(stderr, "Unable to create %ws :(\n", filepath);
+        exit(EXIT_FAILURE);
+    }
+
+    fwrite(contents, sizeof(u8), size, file);
+    fclose(file);
+}
+
+u8* read_file(char* filepath)
+{
+    FILE* file = fopen(filepath, "rb");
+    if (!file)
+    {
+        fprintf(stderr, "%s not found :(\n", filepath);
+        exit(EXIT_FAILURE);
+    }
+
+    fseek(file, 0, SEEK_END);
+    u64 size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    u8* result = (u8*)malloc(size + 1);
+    fread(result, size, 1, file);
+    fclose(file);
+    result[size] = 0;
+
+    return result;
+}
+
+void write_file(char* filepath, u8* contents, u32 size)
+{
+    FILE* file = fopen(filepath, "wb");
+    if (!file)
+    {
+        fprintf(stderr, "Unable to create %s :(\n", filepath);
+        exit(EXIT_FAILURE);
+    }
+
+    fwrite(contents, sizeof(u8), size, file);
+    fclose(file);
+}
 
 #define MAX_MIPMAP_LEVELS 16
 
@@ -819,53 +896,652 @@ internal b32 dds_load_image(DDS_Image* image)
 
 #undef MAKEFOURCC
 
-
-u8* read_file(wchar_t* filepath)
+struct GLTF_Buffer
 {
-    FILE* file = _wfopen(filepath, L"rb");
-    if (!file)
+    String uri;
+    u64    size;
+};
+
+struct GLTF_Buffer_View
+{
+    String name;
+
+    u32 buffer_index;
+    u64 size;
+    u64 offset;
+    u32 stride;
+    u32 target;
+};
+
+enum GLTF_Component_Type
+{
+    GLTF_COMPONENT_TYPE_BYTE   = 5120,
+    GLTF_COMPONENT_TYPE_UBYTE  = 5121,
+    GLTF_COMPONENT_TYPE_SHORT  = 5122,
+    GLTF_COMPONENT_TYPE_USHORT = 5123,
+    GLTF_COMPONENT_TYPE_UINT   = 5125,
+    GLTF_COMPONENT_TYPE_FLOAT  = 5126,
+};
+
+enum GLTF_Data_Type
+{
+    GLTF_DATA_TYPE_SCALAR,
+    GLTF_DATA_TYPE_VEC2,
+    GLTF_DATA_TYPE_VEC3,
+    GLTF_DATA_TYPE_VEC4,
+    GLTF_DATA_TYPE_MAT2,
+    GLTF_DATA_TYPE_MAT3,
+    GLTF_DATA_TYPE_MAT4
+};
+
+// NOTE: Ignoring sparse accessor for now
+struct GLTF_Accessor
+{
+    u32 buffer_view_index;
+    u64 offset;
+    u64 element_count;
+
+    GLTF_Component_Type component_type;
+    GLTF_Data_Type      data_type;
+
+    m4x4 min;
+    m4x4 max;
+    b32  normalized;
+};
+
+enum GLTF_Primitive_Mode
+{
+    GLTF_PRIMITIVE_TYPE_POINT_LIST     = 0,
+    GLTF_PRIMITIVE_TYPE_LINE_LIST      = 1,
+    GLTF_PRIMITIVE_TYPE_LINE_LOOP      = 2,
+    GLTF_PRIMITIVE_TYPE_LINE_STRIP     = 3,
+    GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST  = 4,
+    GLTF_PRIMITIVE_TYPE_TRIANGLE_STRIP = 5,
+    GLTF_PRIMITIVE_TYPE_TRIANGLE_FAN   = 6
+};
+
+enum GLTF_Attribute_Type
+{
+    GLTF_ATTRIBUTE_TYPE_POSITION,
+    GLTF_ATTRIBUTE_TYPE_NORMAL,
+    GLTF_ATTRIBUTE_TYPE_TANGENT,
+    GLTF_ATTRIBUTE_TYPE_TEXCOORD,
+    GLTF_ATTRIBUTE_TYPE_COLOR,
+    GLTF_ATTRIBUTE_TYPE_JOINTS,
+    GLTF_ATTRIBUTE_TYPE_WEIGHTS
+};
+
+struct GLTF_Attribute
+{
+    GLTF_Attribute_Type type;
+    u32                 set_index;
+    u32                 accessor_index;
+};
+
+// NOTE: Ignoring morph targets for now
+struct GLTF_Primitive
+{
+    GLTF_Primitive_Mode mode;
+
+    GLTF_Attribute attributes[8];
+    u32            attribute_count;
+
+    u32 indices;
+    u32 material_index;
+};
+
+// NOTE: Ignoring weights for now
+struct GLTF_Mesh
+{
+    String name;
+
+    GLTF_Primitive* primitives;
+    u32             primitive_count;
+};
+
+struct GLTF_Image
+{
+    String uri;
+    String mime_type;
+    u32    buffer_view_index;
+};
+
+struct GLTF_MSFT_Texture_DDS_Extension
+{
+    u32 dds_image_source_index;
+};
+
+// NOTE: Ignoring sampler for now
+struct GLTF_Texture
+{
+    u32 sampler_index;
+    u32 image_source_index;
+
+    GLTF_MSFT_Texture_DDS_Extension dds_extension;
+};
+
+struct GLTF_Material_Texture
+{
+    u32 texture_index;
+    u32 texcoord_set_index;
+
+    union
     {
-        fprintf(stderr, "%ws not found :(\n", filepath);
-        exit(EXIT_FAILURE);
+        f32 scale;
+        f32 strength;
+    };
+};
+
+struct GLTF_PBR_Material_Metallic_Roughness
+{
+    v4  base_color_factor;
+    f32 metallic_factor;
+    f32 roughness_factor;
+
+    GLTF_Material_Texture base_color_texture;
+    GLTF_Material_Texture metallic_roughness_texture;
+};
+
+enum GLTF_Alpha_Mode
+{
+    GLTF_ALPHA_MODE_OPAQUE,
+    GLTF_ALPHA_MODE_MASK,
+    GLTF_ALPHA_MODE_BLEND
+};
+
+struct GLTF_MSFT_Packing_Occlusion_Roughness_Metallic_Extension
+{
+    GLTF_Material_Texture occlusion_roughness_metallic_texture;
+};
+
+struct GLTF_Material
+{
+    String name;
+
+    GLTF_PBR_Material_Metallic_Roughness pbr_metallic_roughness;
+    GLTF_Material_Texture                normal_texture;
+    GLTF_Material_Texture                occlusion_texture;
+    GLTF_Material_Texture                emissive_texture;
+    v3                                   emissive_factor;
+
+    GLTF_Alpha_Mode alpha_mode;
+    f32             alpha_cutoff;
+    b32             double_sided;
+
+    GLTF_MSFT_Packing_Occlusion_Roughness_Metallic_Extension packing_occlusion_roughness_metallic_extension;
+};
+
+struct GLTF_File
+{
+    GLTF_Buffer* buffers;
+    u32          buffer_count;
+
+    GLTF_Buffer_View* buffer_views;
+    u32               buffer_view_count;
+
+    GLTF_Accessor* accessors;
+    u32            accessor_count;
+
+    GLTF_Mesh*     meshes;
+    u32            mesh_count;
+
+    GLTF_Image* images;
+    u32         image_count;
+
+    GLTF_Texture* textures;
+    u32           texture_count;
+
+    GLTF_Material* materials;
+    u32            material_count;
+};
+
+u32 json_array_count(Tokenizer* tokenizer)
+{
+    char* at = tokenizer->at;
+    u32 count = 0;
+
+    if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACKET))
+    {
+        u32 bracket_count = 1;
+        Token last = get_token(tokenizer);
+        if (last.type == TOKEN_TYPE_OPEN_BRACE)
+        {
+            u32 brace_count = 1;
+            while (true)
+            {
+                Token current = get_token(tokenizer);
+                if (current.type == TOKEN_TYPE_OPEN_BRACE)
+                {
+                    brace_count++;
+                }
+                else if (current.type == TOKEN_TYPE_CLOSE_BRACE)
+                {
+                    brace_count--;
+                }
+                else if (current.type == TOKEN_TYPE_COMMA && last.type == TOKEN_TYPE_CLOSE_BRACE && brace_count == 0)
+                {
+                    count++;
+                }
+                else if (current.type == TOKEN_TYPE_OPEN_BRACKET)
+                {
+                    bracket_count++;
+                }
+                else if (current.type == TOKEN_TYPE_CLOSE_BRACKET)
+                {
+                    bracket_count--;
+                    if (bracket_count == 0)
+                    {
+                        break;
+                    }
+                }
+                last = current;
+            }
+        }
     }
-
-    fseek(file, 0, SEEK_END);
-    u64 size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    u8* result = (u8*)malloc(size + 1);
-    fread(result, size, 1, file);
-    fclose(file);
-    result[size] = 0;
-
-    return result;
+    tokenizer->at = at;
+    return count + 1;
 }
 
-void write_file(wchar_t* filepath, u8* contents, u32 size)
-{
-    FILE* file = _wfopen(filepath, L"wb");
-    if (!file)
-    {
-        fprintf(stderr, "Unable to create %ws :(\n", filepath);
-        exit(EXIT_FAILURE);
-    }
+#define GLTF_CHECK_PARSE(found, key, value) if (!found) { fprintf(stderr, "ERROR(%s): unsupported key: %.*s, with value: %.*s\n", __FUNCTION__, (u32)key.length, key.text, (u32)value.length, value.text); }
+#define GLTF_PARSE_OBJECT(name) void name(Tokenizer* tokenizer, Token key, Token value, void* data)
+typedef void (*GLTF_Parse_Object_Function)(Tokenizer* tokenizer, Token key, Token value, void* data);
 
-    fwrite(contents, sizeof(u8), size, file);
-    fclose(file);
+void parse_gltf_object(Tokenizer* tokenizer, GLTF_Parse_Object_Function parse_function, void* data, u32* count = NULL, u32 size = 0)
+{
+    if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
+    {
+        while (true)
+        {
+            Token key = get_token(tokenizer);
+            if (key.type == TOKEN_TYPE_COMMA)
+            {
+                continue;
+            }
+            else if (key.type == TOKEN_TYPE_CLOSE_BRACE)
+            {
+                break;
+            }
+            else if (eat_token(tokenizer, TOKEN_TYPE_COLON))
+            {
+                parse_function(tokenizer, key, get_token(tokenizer), count ? (void*)((u8*)data + (*count)++ * size) : data);
+            }
+        }
+    }
 }
 
-int main()
+void parse_gltf_array(Tokenizer* tokenizer, void** array, u32* count, u32 element_size, GLTF_Parse_Object_Function parse_function)
 {
-    DDS_Image image;
-    image.data = read_file(L"../data/image1.dds");
+    *count = json_array_count(tokenizer);
+    *array = calloc(*count, element_size);
 
-    if (!dds_load_image(&image))
+    if (*count > 0 && eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACKET))
     {
-        fprintf(stderr, "Unable to load DDS image!\n");
+        for (u32 i = 0; i < *count; ++i)
+        {
+            parse_gltf_object(tokenizer, parse_function, (void*)((u8*)*array + i * element_size));
+            if (!eat_token(tokenizer, TOKEN_TYPE_COMMA))
+            {
+                break;
+            }
+        }
+    }
+}
+
+void json_value_parse_gltf_object(Tokenizer* tokenizer, char* key, void* data, GLTF_Parse_Object_Function parse_function, Token key_token, Token value_token, b32* found, u32* count = NULL, u32 size = 0)
+{
+    if (token_equals(key_token, key))
+    {
+        tokenizer->at = value_token.text;
+        parse_gltf_object(tokenizer, parse_function, data, count, size);
+        *found = true;
+    }
+}
+
+void json_value_parse_gltf_array(Tokenizer* tokenizer, char* key, void** data, u32* count, u32 element_size, GLTF_Parse_Object_Function parse_function, Token key_token, Token value_token, b32* found)
+{
+    if (token_equals(key_token, key))
+    {
+        tokenizer->at = value_token.text;
+        parse_gltf_array(tokenizer, data, count, element_size, parse_function);
+        *found = true;
+    }
+}
+
+#define JSON_VALUE_AS(name, type) void name(Tokenizer* tokenizer, char* key, type* value, Token key_token, Token value_token, b32* found, u32 array_size = 0)
+
+JSON_VALUE_AS(json_value_as_string, String) { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_STRING) { *value = {value_token.text, value_token.length}; *found = true; } }
+JSON_VALUE_AS(json_value_as_u32, u32)       { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER) { *value = (u32)value_token.u64; *found = true; } }
+JSON_VALUE_AS(json_value_as_u64, u64)       { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER) { *value = value_token.u64; *found = true; } }
+JSON_VALUE_AS(json_value_as_f32, f32)       { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER) { *value = (f32)value_token.f64; *found = true; } }
+
+JSON_VALUE_AS(json_value_as_f32_array, float)
+{
+    if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_OPEN_BRACKET)
+    {
+        *found = true;
+        u64 count = 0;
+        while (true)
+        {
+            Token token = get_token(tokenizer);
+            if (token.type == TOKEN_TYPE_CLOSE_BRACKET)
+            {
+                break;
+            }
+            else if (token.type == TOKEN_TYPE_NUMBER)
+            {
+                if (count >= array_size)
+                {
+                    *found = false;
+                    break;
+                }
+                value[count++] = token.is_float ? (f32)token.f64 : (f32)token.s64;
+            }
+        }
+    }
+}
+
+JSON_VALUE_AS(json_value_as_b32, b32)
+{
+    if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_IDENTIFIER)
+    {
+        *found = true;
+        if (token_equals(value_token, "true"))
+        {
+            *value = true;
+        }
+        else if (token_equals(value_token, "false"))
+        {
+            *value = false;
+        }
+        else
+        {
+            *found = false;
+        }
+    }
+}
+
+JSON_VALUE_AS(json_value_as_gltf_data_type, GLTF_Data_Type)
+{
+    if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_STRING)
+    {
+        *found = true;
+        if (token_equals(value_token, JSON_STRING(SCALAR)))    { *value = GLTF_DATA_TYPE_SCALAR; }
+        else if (token_equals(value_token, JSON_STRING(VEC2))) { *value = GLTF_DATA_TYPE_VEC2; }
+        else if (token_equals(value_token, JSON_STRING(VEC3))) { *value = GLTF_DATA_TYPE_VEC3; }
+        else if (token_equals(value_token, JSON_STRING(VEC4))) { *value = GLTF_DATA_TYPE_VEC4; }
+        else if (token_equals(value_token, JSON_STRING(MAT2))) { *value = GLTF_DATA_TYPE_MAT2; }
+        else if (token_equals(value_token, JSON_STRING(MAT3))) { *value = GLTF_DATA_TYPE_MAT3; }
+        else if (token_equals(value_token, JSON_STRING(MAT4))) { *value = GLTF_DATA_TYPE_MAT4; }
+        else                                                   { *found = false; }
+    }
+}
+
+JSON_VALUE_AS(json_value_as_gltf_alpha_mode, GLTF_Alpha_Mode)
+{
+    if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_STRING)
+    {
+        *found = true;
+        if (token_equals(value_token, JSON_STRING(OPAQUE)))     { *value = GLTF_ALPHA_MODE_OPAQUE; }
+        else if (token_equals(value_token, JSON_STRING(MASK)))  { *value = GLTF_ALPHA_MODE_MASK; }
+        else if (token_equals(value_token, JSON_STRING(BLEND))) { *value = GLTF_ALPHA_MODE_BLEND; }
+        else                                                    { *found = false; }
+    }
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_buffer)
+{
+    GLTF_Buffer* buffer = (GLTF_Buffer*)data;
+
+    b32 found = false;
+    json_value_as_string(tokenizer, JSON_STRING(uri), &buffer->uri, key, value, &found);
+    json_value_as_u64(tokenizer, JSON_STRING(byteLength), &buffer->size, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_buffer_view)
+{
+    GLTF_Buffer_View* buffer_view = (GLTF_Buffer_View*)data;
+
+    b32 found = false;
+    json_value_as_string(tokenizer, JSON_STRING(name), &buffer_view->name, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(buffer), &buffer_view->buffer_index, key, value, &found);
+    json_value_as_u64(tokenizer, JSON_STRING(byteLength), &buffer_view->size, key, value, &found);
+    json_value_as_u64(tokenizer, JSON_STRING(byteOffset), &buffer_view->offset, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(byteStride), &buffer_view->stride, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(target), &buffer_view->target, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_accessor)
+{
+    GLTF_Accessor* accessor = (GLTF_Accessor*)data;
+
+    b32 found = false;
+    json_value_as_u32(tokenizer, JSON_STRING(bufferView), &accessor->buffer_view_index, key, value, &found);
+    json_value_as_u64(tokenizer, JSON_STRING(byteOffset), &accessor->offset, key, value, &found);
+    json_value_as_u64(tokenizer, JSON_STRING(count), &accessor->element_count, key, value, &found);
+    json_value_as_u64(tokenizer, JSON_STRING(componentType), (u64*)&accessor->component_type, key, value, &found);
+    json_value_as_gltf_data_type(tokenizer, JSON_STRING(type), &accessor->data_type, key, value, &found);
+    json_value_as_f32_array(tokenizer, JSON_STRING(min), accessor->min.data, key, value, &found, array_count(accessor->min.data));
+    json_value_as_f32_array(tokenizer, JSON_STRING(max), accessor->max.data, key, value, &found, array_count(accessor->max.data));
+    json_value_as_b32(tokenizer, JSON_STRING(normalized), &accessor->normalized, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_attribute)
+{
+    GLTF_Attribute* attribute = (GLTF_Attribute*)data;
+
+    b32 found = false;
+    if (key.type == TOKEN_TYPE_STRING && value.type == TOKEN_TYPE_NUMBER)
+    {
+        found = true;
+        if (token_starts_with(key, JSON_STRING(POSITION), sizeof(JSON_STRING(POSITION)) - 1))      { attribute->type = GLTF_ATTRIBUTE_TYPE_POSITION; }
+        else if (token_starts_with(key, JSON_STRING(NORMAL), sizeof(JSON_STRING(NORMAL)) - 1))     { attribute->type = GLTF_ATTRIBUTE_TYPE_NORMAL; }
+        else if (token_starts_with(key, JSON_STRING(TANGENT), sizeof(JSON_STRING(TANGENT)) - 1))   { attribute->type = GLTF_ATTRIBUTE_TYPE_TANGENT; }
+        else if (token_starts_with(key, JSON_STRING(TEXCOORD), sizeof(JSON_STRING(TEXCOORD)) - 3)) { attribute->type = GLTF_ATTRIBUTE_TYPE_TEXCOORD; }
+        else if (token_starts_with(key, JSON_STRING(COLOR), sizeof(JSON_STRING(COLOR)) - 3))       { attribute->type = GLTF_ATTRIBUTE_TYPE_COLOR; }
+        else if (token_starts_with(key, JSON_STRING(JOINTS), sizeof(JSON_STRING(JOINTS)) - 3))     { attribute->type = GLTF_ATTRIBUTE_TYPE_JOINTS; }
+        else if (token_starts_with(key, JSON_STRING(WEIGHTS), sizeof(JSON_STRING(WEIGHTS)) - 3))   { attribute->type = GLTF_ATTRIBUTE_TYPE_WEIGHTS; }
+        else                                                                                       { found = false; }
+
+        if (found)
+        {
+            attribute->set_index = 0;
+            for (u64 i = 0; i < key.length; ++i)
+            {
+                if (key.text[i] == '_')
+                {
+                    attribute->set_index = strtoul(key.text + 1, NULL, 0);
+                    break;
+                }
+            }
+            attribute->accessor_index = (u32)value.u64;
+        }
+    }
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_primitive)
+{
+    GLTF_Primitive* primitive = (GLTF_Primitive*)data;
+
+    b32 found = false;
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(attributes), primitive->attributes, parse_gltf_attribute, key, value, &found, &primitive->attribute_count, sizeof(GLTF_Attribute));
+    json_value_as_u64(tokenizer, JSON_STRING(mode), (u64*)&primitive->mode, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(indices), &primitive->indices, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(material), &primitive->material_index, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_mesh)
+{
+    GLTF_Mesh* mesh = (GLTF_Mesh*)data;
+
+    b32 found = false;
+    json_value_parse_gltf_array(tokenizer, JSON_STRING(primitives), (void**)&mesh->primitives, &mesh->primitive_count, sizeof(GLTF_Primitive), parse_gltf_primitive, key, value, &found);
+    json_value_as_string(tokenizer, JSON_STRING(name), &mesh->name, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_image)
+{
+    GLTF_Image* image = (GLTF_Image*)data;
+
+    b32 found = false;
+    json_value_as_string(tokenizer, JSON_STRING(uri), &image->uri, key, value, &found);
+    json_value_as_string(tokenizer, JSON_STRING(mimeType), &image->mime_type, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(bufferView), &image->buffer_view_index, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_material_texture)
+{
+    GLTF_Material_Texture* texture = (GLTF_Material_Texture*)data;
+
+    b32 found = false;
+    json_value_as_u32(tokenizer, JSON_STRING(index), &texture->texture_index, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(texCoord), &texture->texcoord_set_index, key, value, &found);
+    json_value_as_f32(tokenizer, JSON_STRING(scale), &texture->scale, key, value, &found);
+    json_value_as_f32(tokenizer, JSON_STRING(strength), &texture->strength, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_pbr_metallic_roughness)
+{
+    GLTF_PBR_Material_Metallic_Roughness* pbr = (GLTF_PBR_Material_Metallic_Roughness*)data;
+
+    b32 found = false;
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(baseColorTexture), &pbr->base_color_texture, parse_gltf_material_texture, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(metallicRoughnessTexture), &pbr->metallic_roughness_texture, parse_gltf_material_texture, key, value, &found);
+    json_value_as_f32_array(tokenizer, JSON_STRING(baseColorFactor), pbr->base_color_factor.data, key, value, &found, array_count(pbr->base_color_factor.data));
+    json_value_as_f32(tokenizer, JSON_STRING(metallicFactor), &pbr->metallic_factor, key, value, &found);
+    json_value_as_f32(tokenizer, JSON_STRING(roughnessFactor), &pbr->roughness_factor, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_msft_texture_dds)
+{
+    GLTF_MSFT_Texture_DDS_Extension* dds = (GLTF_MSFT_Texture_DDS_Extension*)data;
+
+    b32 found = false;
+    json_value_as_u32(tokenizer, JSON_STRING(source), &dds->dds_image_source_index, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_msft_packing_occlusion_roughness_metallic)
+{
+    GLTF_MSFT_Packing_Occlusion_Roughness_Metallic_Extension* packing = (GLTF_MSFT_Packing_Occlusion_Roughness_Metallic_Extension*)data;
+
+    b32 found = false;
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(occlusionRoughnessMetallicTexture), &packing->occlusion_roughness_metallic_texture, parse_gltf_material_texture, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_extension)
+{
+    b32 found = false;
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(MSFT_texture_dds), data, parse_gltf_msft_texture_dds, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(MSFT_packing_occlusionRoughnessMetallic), data, parse_gltf_msft_packing_occlusion_roughness_metallic, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_texture)
+{
+    GLTF_Texture* texture = (GLTF_Texture*)data;
+
+    b32 found = false;
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(extensions), &texture->dds_extension, parse_gltf_extension, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(sampler), &texture->sampler_index, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(source), &texture->image_source_index, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+GLTF_PARSE_OBJECT(parse_gltf_material)
+{
+    GLTF_Material* material = (GLTF_Material*)data;
+
+    b32 found = false;
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(extensions), &material->packing_occlusion_roughness_metallic_extension, parse_gltf_extension, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(pbrMetallicRoughness), &material->pbr_metallic_roughness, parse_gltf_pbr_metallic_roughness, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(normalTexture), &material->normal_texture, parse_gltf_material_texture, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(occlusionTexture), &material->occlusion_texture, parse_gltf_material_texture, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(emissiveTexture), &material->emissive_texture, parse_gltf_material_texture, key, value, &found);
+    json_value_as_string(tokenizer, JSON_STRING(name), &material->name, key, value, &found);
+    json_value_as_f32_array(tokenizer, JSON_STRING(emissiveFactor), material->emissive_factor.data, key, value, &found, array_count(material->emissive_factor.data));
+    json_value_as_gltf_alpha_mode(tokenizer, JSON_STRING(alphaMode), &material->alpha_mode, key, value, &found);
+    json_value_as_f32(tokenizer, JSON_STRING(alphaCutoff), &material->alpha_cutoff, key, value, &found);
+    json_value_as_b32(tokenizer, JSON_STRING(doubleSided), &material->double_sided, key, value, &found);
+    GLTF_CHECK_PARSE(found, key, value);
+}
+
+b32 parse_gltf(char* json, GLTF_File* gltf)
+{
+    Tokenizer tokenizer = {json};
+
+    b32 parsing = true;
+    while (parsing)
+    {
+        Token token = get_token(&tokenizer);
+        switch (token.type)
+        {
+        case TOKEN_TYPE_END_OF_STREAM:
+            parsing = false;
+            break;
+        case TOKEN_TYPE_STRING:
+        {
+            if (eat_token(&tokenizer, TOKEN_TYPE_COLON))
+            {
+                if (token_equals(token, JSON_STRING(buffers)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->buffers, &gltf->buffer_count, sizeof(GLTF_Buffer), parse_gltf_buffer);
+                }
+                else if (token_equals(token, JSON_STRING(bufferViews)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->buffer_views, &gltf->buffer_view_count, sizeof(GLTF_Buffer_View), parse_gltf_buffer_view);
+                }
+                else if (token_equals(token, JSON_STRING(accessors)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->accessors, &gltf->accessor_count, sizeof(GLTF_Accessor), parse_gltf_accessor);
+                }
+                else if (token_equals(token, JSON_STRING(meshes)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->meshes, &gltf->mesh_count, sizeof(GLTF_Mesh), parse_gltf_mesh);
+                }
+                else if (token_equals(token, JSON_STRING(images)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->images, &gltf->image_count, sizeof(GLTF_Image), parse_gltf_image);
+                }
+                else if (token_equals(token, JSON_STRING(textures)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->textures, &gltf->texture_count, sizeof(GLTF_Texture), parse_gltf_texture);
+                }
+                else if (token_equals(token, JSON_STRING(materials)))
+                {
+                    parse_gltf_array(&tokenizer, (void**)&gltf->materials, &gltf->material_count, sizeof(GLTF_Material), parse_gltf_material);
+                }
+            }
+        } break;
+        default:
+            break;
+        }
+    }
+    return true;
+}
+
+int main(int argc, char* argv[])
+{
+    char* gltf_json = (char*)read_file(argv[1]);
+
+    GLTF_File gltf_file;
+    if (!parse_gltf(gltf_json, &gltf_file))
+    {
+        fprintf(stderr, "Unable to load GLTF file: %s\n", argv[1]);
         return 1;
     }
-
-    // TODO: Actual asset file format!
-    write_file(L"../data/image1.tsu", image.levels[0].data, image.size);
+    else
+    {
+        printf("Finished parsing GLTF file: %s\n", argv[1]);
+    }
     return 0;
 }
