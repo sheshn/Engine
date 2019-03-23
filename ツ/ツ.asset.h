@@ -1,40 +1,44 @@
 #pragma once
 
-// TODO: Don't store data (eg. Vertex* vertices)?
-// Read directly from asset file into GPU memory?
-
-struct Sub_Mesh
+#pragma pack(push, 1)
+struct Asset
 {
+    u64 id;
+};
+
+struct Sub_Mesh_Info
+{
+    u64 data_offset;
     u32 index_offset;
     u32 index_count;
+    u32 material_index;
 };
 
-struct Mesh
+struct Mesh_Info
 {
-    Vertex* vertices;
-    u32     vertex_count;
-    u32*    indices;
-    u32     index_count;
+    Asset asset;
 
-    Sub_Mesh* sub_meshes;
-    u32       sub_mesh_count;
+    u32 sub_mesh_offset;
+    u32 sub_mesh_count;
 };
 
-struct Sub_Texture
+struct Texture_Info
 {
-    u64 offset;
-    u32 size;
+    Asset asset;
+
+    u64 data_offset;
     u32 width;
     u32 height;
-    u32 depth;
+    u32 mipmap_count;
+    u32 size;
 };
 
-struct Texture
+struct Material_Info
 {
-    u8* data;
+    Asset asset;
 
-    Sub_Texture* sub_textures;
-    u32          mipmap_count;
+    Material material;
 };
+#pragma pack(pop)
 
 void init_asset_system(Memory_Arena* memory_arena);

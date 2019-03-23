@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../ツ/ツ.common.h"
+#include "../ツ/ツ.h"
 #include "../ツ/ツ.math.h"
+#include "../ツ/ツ.renderer.h"
+#include "../ツ/ツ.asset.h"
 #include "ツ.tokenizer.h"
 
 #define JSON_STRING(text) "\""#text"\""
@@ -79,6 +81,34 @@ void write_file(char* filepath, u8* contents, u32 size)
 
     fwrite(contents, sizeof(u8), size, file);
     fclose(file);
+}
+
+u64 file_size(char* filepath)
+{
+    FILE* file = fopen(filepath, "rb");
+    if (!file)
+    {
+        fprintf(stderr, "ERROR: %s not found :(\n", filepath);
+        return 0;
+    }
+
+    fseek(file, 0, SEEK_END);
+    u64 size = ftell(file);
+    fclose(file);
+
+    return size;
+}
+
+b32 string_equals(char* s1, char* s2)
+{
+    while (*s1 && *s2)
+    {
+        if (*s1++ != *s2++)
+        {
+            return false;
+        }
+    }
+    return *s1 == *s2;
 }
 
 #define MAX_MIPMAP_LEVELS 16
@@ -325,6 +355,7 @@ struct DDS_Image
     u8*               data;
     u32               size;
     DDS_Image_Surface levels[MAX_MIPMAP_LEVELS];
+    u32               mipmap_count;
     DXGI_Format       format;
     Image_Type        type;
     Image_View_Type   view_type;
@@ -872,6 +903,7 @@ internal b32 dds_load_image(DDS_Image* image)
     assert(layers == 1 && levels < MAX_MIPMAP_LEVELS);
 
     image->size = 0;
+    image->mipmap_count = levels;
     for (u32 i = 0; i < layers; ++i)
     {
         u32 w = width;
@@ -896,10 +928,20 @@ internal b32 dds_load_image(DDS_Image* image)
 
 #undef MAKEFOURCC
 
+#define GLTF_INIT_OBJECT(name) internal void name(void* data)
+typedef void (*GLTF_Init_Object_Function)(void* data);
+
 struct GLTF_Buffer
 {
+    String name;
     String uri;
     u64    size;
+};
+
+enum GLTF_Buffer_View_Target
+{
+    GLTF_BUFFER_VIEW_TARGET_VERTEX_ARRAY = 34962,
+    GLTF_BUFFER_VIEW_TARGET_INDEX_ARRAY  = 34963
 };
 
 struct GLTF_Buffer_View
@@ -910,7 +952,8 @@ struct GLTF_Buffer_View
     u64 size;
     u64 offset;
     u32 stride;
-    u32 target;
+
+    GLTF_Buffer_View_Target target;
 };
 
 enum GLTF_Component_Type
@@ -923,6 +966,23 @@ enum GLTF_Component_Type
     GLTF_COMPONENT_TYPE_FLOAT  = 5126,
 };
 
+u32 gltf_sizeof_component_type(GLTF_Component_Type component_type)
+{
+    switch (component_type)
+    {
+    case GLTF_COMPONENT_TYPE_BYTE:
+    case GLTF_COMPONENT_TYPE_UBYTE:
+        return 1;
+    case GLTF_COMPONENT_TYPE_SHORT:
+    case GLTF_COMPONENT_TYPE_USHORT:
+        return 2;
+    case GLTF_COMPONENT_TYPE_UINT:
+    case GLTF_COMPONENT_TYPE_FLOAT:
+        return 4;
+    }
+    return 0;
+}
+
 enum GLTF_Data_Type
 {
     GLTF_DATA_TYPE_SCALAR,
@@ -934,10 +994,39 @@ enum GLTF_Data_Type
     GLTF_DATA_TYPE_MAT4
 };
 
+u32 gltf_element_count_of_data_type(GLTF_Data_Type data_type)
+{
+    switch (data_type)
+    {
+    case GLTF_DATA_TYPE_SCALAR:
+        return 1;
+    case GLTF_DATA_TYPE_VEC2:
+        return 2;
+    case GLTF_DATA_TYPE_VEC3:
+        return 3;
+    case GLTF_DATA_TYPE_VEC4:
+        return 4;
+    case GLTF_DATA_TYPE_MAT2:
+        return 4;
+    case GLTF_DATA_TYPE_MAT3:
+        return 9;
+    case GLTF_DATA_TYPE_MAT4:
+        return 16;
+    }
+    return 0;
+}
+
+u32 gltf_sizeof_data_type_with_component_type(GLTF_Data_Type data_type, GLTF_Component_Type component_type)
+{
+    u32 component_size = gltf_sizeof_component_type(component_type);
+    u32 element_count = gltf_element_count_of_data_type(data_type);
+    return element_count * component_size;
+}
+
 // NOTE: Ignoring sparse accessor for now
 struct GLTF_Accessor
 {
-    u32 buffer_view_index;
+    u32 buffer_view_index; // +1 to index (0 means shouldn't use this property)
     u64 offset;
     u64 element_count;
 
@@ -986,9 +1075,16 @@ struct GLTF_Primitive
     GLTF_Attribute attributes[8];
     u32            attribute_count;
 
-    u32 indices;
-    u32 material_index;
+    u32 indices_accessor_index; // +1 to index (0 means shouldn't use this property)
+    u32 material_index;         // +1 to index (0 means shouldn't use this property)
 };
+
+GLTF_INIT_OBJECT(init_gltf_primitive)
+{
+    GLTF_Primitive* o = (GLTF_Primitive*)data;
+    *o = {};
+    o->mode = GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST;
+}
 
 // NOTE: Ignoring weights for now
 struct GLTF_Mesh
@@ -1008,7 +1104,7 @@ struct GLTF_Image
 
 struct GLTF_MSFT_Texture_DDS_Extension
 {
-    u32 dds_image_source_index;
+    u32 dds_image_source_index; // +1 to index (0 means shouldn't use this property)
 };
 
 // NOTE: Ignoring sampler for now
@@ -1022,7 +1118,7 @@ struct GLTF_Texture
 
 struct GLTF_Material_Texture
 {
-    u32 texture_index;
+    u32 texture_index; // +1 to index (0 means shouldn't use this property)
     u32 texcoord_set_index;
 
     union
@@ -1071,6 +1167,23 @@ struct GLTF_Material
     GLTF_MSFT_Packing_Occlusion_Roughness_Metallic_Extension packing_occlusion_roughness_metallic_extension;
 };
 
+GLTF_INIT_OBJECT(init_gltf_material)
+{
+    GLTF_Material* o = (GLTF_Material*)data;
+    *o = {};
+    o->pbr_metallic_roughness.base_color_factor = {1, 1, 1, 1};
+    o->pbr_metallic_roughness.metallic_factor = 1.0f;
+    o->pbr_metallic_roughness.roughness_factor = 1.0f;
+    o->pbr_metallic_roughness.base_color_texture.scale = 1.0f;
+    o->pbr_metallic_roughness.metallic_roughness_texture.scale = 1.0f;
+    o->normal_texture.scale = 1.0f;
+    o->occlusion_texture.strength = 1.0f;
+    o->emissive_texture.scale = 1.0f;
+    o->alpha_mode = GLTF_ALPHA_MODE_OPAQUE;
+    o->alpha_cutoff = 0.5f;
+    o->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.scale = 1.0f;
+}
+
 struct GLTF_File
 {
     GLTF_Buffer* buffers;
@@ -1093,9 +1206,35 @@ struct GLTF_File
 
     GLTF_Material* materials;
     u32            material_count;
+
+    char* json;
+    u8*   bin;
 };
 
-u32 json_array_count(Tokenizer* tokenizer)
+internal u32 GLTF_BINARY_MAGIC = 0x46546C67;
+
+enum GLTF_Binary_Chunk_Type
+{
+    GLTF_BINARY_CHUNK_TYPE_JSON = 0x4E4F534A,
+    GLTF_BINARY_CHUNK_TYPE_BIN  = 0x004E4942
+};
+
+#pragma pack(push, 1)
+struct GLTF_Binary_File_Header
+{
+    u32 magic;
+    u32 version;
+    u32 length;
+};
+
+struct GLTF_Binary_Chunk_Header
+{
+    u32 length;
+    u32 type;
+};
+#pragma pack(pop)
+
+internal u32 json_array_count(Tokenizer* tokenizer)
 {
     char* at = tokenizer->at;
     u32 count = 0;
@@ -1143,11 +1282,15 @@ u32 json_array_count(Tokenizer* tokenizer)
 }
 
 #define GLTF_CHECK_PARSE(found, key, value) if (!found) { fprintf(stderr, "ERROR(%s): unsupported key: %.*s, with value: %.*s\n", __FUNCTION__, (u32)key.length, key.text, (u32)value.length, value.text); }
-#define GLTF_PARSE_OBJECT(name) void name(Tokenizer* tokenizer, Token key, Token value, void* data)
+#define GLTF_PARSE_OBJECT(name) internal void name(Tokenizer* tokenizer, Token key, Token value, void* data)
 typedef void (*GLTF_Parse_Object_Function)(Tokenizer* tokenizer, Token key, Token value, void* data);
 
-void parse_gltf_object(Tokenizer* tokenizer, GLTF_Parse_Object_Function parse_function, void* data, u32* count = NULL, u32 size = 0)
+internal void parse_gltf_object(Tokenizer* tokenizer, GLTF_Parse_Object_Function parse_function, void* data, u32* count = NULL, u32 size = 0, GLTF_Init_Object_Function init_function = NULL)
 {
+    if (init_function)
+    {
+        init_function(data);
+    }
     if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
     {
         while (true)
@@ -1169,7 +1312,7 @@ void parse_gltf_object(Tokenizer* tokenizer, GLTF_Parse_Object_Function parse_fu
     }
 }
 
-void parse_gltf_array(Tokenizer* tokenizer, void** array, u32* count, u32 element_size, GLTF_Parse_Object_Function parse_function)
+internal void parse_gltf_array(Tokenizer* tokenizer, void** array, u32* count, u32 element_size, GLTF_Parse_Object_Function parse_function, GLTF_Init_Object_Function init_function = NULL)
 {
     *count = json_array_count(tokenizer);
     *array = calloc(*count, element_size);
@@ -1178,7 +1321,7 @@ void parse_gltf_array(Tokenizer* tokenizer, void** array, u32* count, u32 elemen
     {
         for (u32 i = 0; i < *count; ++i)
         {
-            parse_gltf_object(tokenizer, parse_function, (void*)((u8*)*array + i * element_size));
+            parse_gltf_object(tokenizer, parse_function, (void*)((u8*)*array + i * element_size), NULL, 0, init_function);
             if (!eat_token(tokenizer, TOKEN_TYPE_COMMA))
             {
                 break;
@@ -1187,30 +1330,37 @@ void parse_gltf_array(Tokenizer* tokenizer, void** array, u32* count, u32 elemen
     }
 }
 
-void json_value_parse_gltf_object(Tokenizer* tokenizer, char* key, void* data, GLTF_Parse_Object_Function parse_function, Token key_token, Token value_token, b32* found, u32* count = NULL, u32 size = 0)
+internal void json_value_parse_gltf_object(Tokenizer* tokenizer, char* key, void* data, GLTF_Parse_Object_Function parse_function, Token key_token, Token value_token, b32* found, u32* count = NULL, u32 size = 0, GLTF_Init_Object_Function init_function = NULL)
 {
     if (token_equals(key_token, key))
     {
         tokenizer->at = value_token.text;
-        parse_gltf_object(tokenizer, parse_function, data, count, size);
+        parse_gltf_object(tokenizer, parse_function, data, count, size, init_function);
         *found = true;
     }
 }
 
-void json_value_parse_gltf_array(Tokenizer* tokenizer, char* key, void** data, u32* count, u32 element_size, GLTF_Parse_Object_Function parse_function, Token key_token, Token value_token, b32* found)
+internal void json_value_parse_gltf_array(Tokenizer* tokenizer, char* key, void** data, u32* count, u32 element_size, GLTF_Parse_Object_Function parse_function, Token key_token, Token value_token, b32* found, GLTF_Init_Object_Function init_function = NULL)
 {
     if (token_equals(key_token, key))
     {
         tokenizer->at = value_token.text;
-        parse_gltf_array(tokenizer, data, count, element_size, parse_function);
+        parse_gltf_array(tokenizer, data, count, element_size, parse_function, init_function);
         *found = true;
     }
 }
 
-#define JSON_VALUE_AS(name, type) void name(Tokenizer* tokenizer, char* key, type* value, Token key_token, Token value_token, b32* found, u32 array_size = 0)
+internal void json_value_as_u32(Tokenizer* tokenizer, char* key, u32* value, Token key_token, Token value_token, b32* found, u32 array_size = 0, u32 increment = 0)
+{
+    if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER)
+    {
+        *value = (u32)value_token.u64 + increment;
+        *found = true;
+    }
+}
 
+#define JSON_VALUE_AS(name, type) internal void name(Tokenizer* tokenizer, char* key, type* value, Token key_token, Token value_token, b32* found, u32 array_size = 0)
 JSON_VALUE_AS(json_value_as_string, String) { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_STRING) { *value = {value_token.text, value_token.length}; *found = true; } }
-JSON_VALUE_AS(json_value_as_u32, u32)       { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER) { *value = (u32)value_token.u64; *found = true; } }
 JSON_VALUE_AS(json_value_as_u64, u64)       { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER) { *value = value_token.u64; *found = true; } }
 JSON_VALUE_AS(json_value_as_f32, f32)       { if (token_equals(key_token, key) && value_token.type == TOKEN_TYPE_NUMBER) { *value = (f32)value_token.f64; *found = true; } }
 
@@ -1293,6 +1443,7 @@ GLTF_PARSE_OBJECT(parse_gltf_buffer)
     GLTF_Buffer* buffer = (GLTF_Buffer*)data;
 
     b32 found = false;
+    json_value_as_string(tokenizer, JSON_STRING(name), &buffer->name, key, value, &found);
     json_value_as_string(tokenizer, JSON_STRING(uri), &buffer->uri, key, value, &found);
     json_value_as_u64(tokenizer, JSON_STRING(byteLength), &buffer->size, key, value, &found);
     GLTF_CHECK_PARSE(found, key, value);
@@ -1308,7 +1459,7 @@ GLTF_PARSE_OBJECT(parse_gltf_buffer_view)
     json_value_as_u64(tokenizer, JSON_STRING(byteLength), &buffer_view->size, key, value, &found);
     json_value_as_u64(tokenizer, JSON_STRING(byteOffset), &buffer_view->offset, key, value, &found);
     json_value_as_u32(tokenizer, JSON_STRING(byteStride), &buffer_view->stride, key, value, &found);
-    json_value_as_u32(tokenizer, JSON_STRING(target), &buffer_view->target, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(target), (u32*)&buffer_view->target, key, value, &found);
     GLTF_CHECK_PARSE(found, key, value);
 }
 
@@ -1317,7 +1468,7 @@ GLTF_PARSE_OBJECT(parse_gltf_accessor)
     GLTF_Accessor* accessor = (GLTF_Accessor*)data;
 
     b32 found = false;
-    json_value_as_u32(tokenizer, JSON_STRING(bufferView), &accessor->buffer_view_index, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(bufferView), &accessor->buffer_view_index, key, value, &found, 0, 1);
     json_value_as_u64(tokenizer, JSON_STRING(byteOffset), &accessor->offset, key, value, &found);
     json_value_as_u64(tokenizer, JSON_STRING(count), &accessor->element_count, key, value, &found);
     json_value_as_u64(tokenizer, JSON_STRING(componentType), (u64*)&accessor->component_type, key, value, &found);
@@ -1368,9 +1519,9 @@ GLTF_PARSE_OBJECT(parse_gltf_primitive)
 
     b32 found = false;
     json_value_parse_gltf_object(tokenizer, JSON_STRING(attributes), primitive->attributes, parse_gltf_attribute, key, value, &found, &primitive->attribute_count, sizeof(GLTF_Attribute));
-    json_value_as_u64(tokenizer, JSON_STRING(mode), (u64*)&primitive->mode, key, value, &found);
-    json_value_as_u32(tokenizer, JSON_STRING(indices), &primitive->indices, key, value, &found);
-    json_value_as_u32(tokenizer, JSON_STRING(material), &primitive->material_index, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(mode), (u32*)&primitive->mode, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(indices), &primitive->indices_accessor_index, key, value, &found, 0, 1);
+    json_value_as_u32(tokenizer, JSON_STRING(material), &primitive->material_index, key, value, &found, 0, 1);
     GLTF_CHECK_PARSE(found, key, value);
 }
 
@@ -1379,7 +1530,7 @@ GLTF_PARSE_OBJECT(parse_gltf_mesh)
     GLTF_Mesh* mesh = (GLTF_Mesh*)data;
 
     b32 found = false;
-    json_value_parse_gltf_array(tokenizer, JSON_STRING(primitives), (void**)&mesh->primitives, &mesh->primitive_count, sizeof(GLTF_Primitive), parse_gltf_primitive, key, value, &found);
+    json_value_parse_gltf_array(tokenizer, JSON_STRING(primitives), (void**)&mesh->primitives, &mesh->primitive_count, sizeof(GLTF_Primitive), parse_gltf_primitive, key, value, &found, init_gltf_primitive);
     json_value_as_string(tokenizer, JSON_STRING(name), &mesh->name, key, value, &found);
     GLTF_CHECK_PARSE(found, key, value);
 }
@@ -1400,7 +1551,7 @@ GLTF_PARSE_OBJECT(parse_gltf_material_texture)
     GLTF_Material_Texture* texture = (GLTF_Material_Texture*)data;
 
     b32 found = false;
-    json_value_as_u32(tokenizer, JSON_STRING(index), &texture->texture_index, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(index), &texture->texture_index, key, value, &found, 0, 1);
     json_value_as_u32(tokenizer, JSON_STRING(texCoord), &texture->texcoord_set_index, key, value, &found);
     json_value_as_f32(tokenizer, JSON_STRING(scale), &texture->scale, key, value, &found);
     json_value_as_f32(tokenizer, JSON_STRING(strength), &texture->strength, key, value, &found);
@@ -1425,7 +1576,7 @@ GLTF_PARSE_OBJECT(parse_gltf_msft_texture_dds)
     GLTF_MSFT_Texture_DDS_Extension* dds = (GLTF_MSFT_Texture_DDS_Extension*)data;
 
     b32 found = false;
-    json_value_as_u32(tokenizer, JSON_STRING(source), &dds->dds_image_source_index, key, value, &found);
+    json_value_as_u32(tokenizer, JSON_STRING(source), &dds->dds_image_source_index, key, value, &found, 0, 1);
     GLTF_CHECK_PARSE(found, key, value);
 }
 
@@ -1475,9 +1626,9 @@ GLTF_PARSE_OBJECT(parse_gltf_material)
     GLTF_CHECK_PARSE(found, key, value);
 }
 
-b32 parse_gltf(char* json, GLTF_File* gltf)
+internal b32 parse_gltf(GLTF_File* gltf)
 {
-    Tokenizer tokenizer = {json};
+    Tokenizer tokenizer = {gltf->json};
 
     b32 parsing = true;
     while (parsing)
@@ -1518,7 +1669,7 @@ b32 parse_gltf(char* json, GLTF_File* gltf)
                 }
                 else if (token_equals(token, JSON_STRING(materials)))
                 {
-                    parse_gltf_array(&tokenizer, (void**)&gltf->materials, &gltf->material_count, sizeof(GLTF_Material), parse_gltf_material);
+                    parse_gltf_array(&tokenizer, (void**)&gltf->materials, &gltf->material_count, sizeof(GLTF_Material), parse_gltf_material, init_gltf_material);
                 }
             }
         } break;
@@ -1526,22 +1677,516 @@ b32 parse_gltf(char* json, GLTF_File* gltf)
             break;
         }
     }
+
+    // for (u32 i = 0; i < gltf->material_count; ++i)
+    // {
+    //     GLTF_Material material = gltf->materials[i];
+    //     if (material.pbr_metallic_roughness.base_color_texture.texture_index == 0)
+    //     {
+    //         printf("Material %u does not have base_color_texture\n", i);
+    //     }
+    //     if (material.pbr_metallic_roughness.metallic_roughness_texture.texture_index == 0)
+    //     {
+    //         printf("Material %u does not have metallic_roughness_texture\n", i);
+    //     }
+    // }
     return true;
 }
 
+internal u32 TSU_MAGIC = 0xE383842E; // ツ.
+internal u32 TSU_VERSION = 1;
+
+#pragma pack(push, 1)
+struct TSU_File_Header
+{
+    u32 magic;
+    u32 version;
+
+    u32 texture_count;
+    u32 material_count;
+    u32 mesh_count;
+
+    u64 texture_data_offset;
+    u64 mesh_data_offset;
+
+    u8 reserved[28];
+};
+#pragma pack(pop)
+
+struct TSU_File
+{
+    TSU_File_Header header;
+
+    Texture_Info*  textures;
+    u32            current_texture_index;
+
+    Material_Info* materials;
+    u32            current_material_index;
+
+    Mesh_Info*     meshes;
+    u32            current_mesh_index;
+
+    Sub_Mesh_Info* sub_meshes;
+    u32            sub_mesh_count;
+    u32            current_sub_mesh_index;
+
+    u8* texture_data;
+    u64 texture_data_size;
+    u64 current_texture_data_offset;
+
+    u8* mesh_data;
+    u64 mesh_data_size;
+    u64 current_mesh_data_offset;
+};
+
+/*
+       TSU File Format
+    |-------------------|
+    |       magic       |
+    |-------------------|
+    |      version      |
+    |-------------------|
+    |   texture_count   |
+    |-------------------|
+    |   material_count  |
+    |-------------------|
+    |     mesh_count    |
+    |-------------------|
+    |texture_data_offset|
+    |-------------------|
+    | mesh_data_offset  |
+    |-------------------|
+    |   reserved[28]    |
+    |-------------------|
+    |   Texture_Info1   |
+    |   Texture_Info2   |
+    |   Texture_Info3   |
+    |        ...        |
+    |-------------------|
+    |   Material_Info1  |
+    |   Material_Info2  |
+    |   Material_Info3  |
+    |        ...        |
+    |-------------------|
+    |     Mesh_Info1    |
+    |     Mesh_Info2    |
+    |     Mesh_Info3    |
+    |        ...        |
+    |-------------------|
+    |  Sub_Mesh_Info11  |
+    |  Sub_Mesh_Info12  |
+    |  Sub_Mesh_Info21  |
+    |  Sub_Mesh_Info31  |
+    |        ...        |
+    |-------------------|
+    |    Texture_Data   |
+    |-------------------|
+    |     Mesh_Data     |
+    |-------------------|
+
+     NOTE: texture_count, material_count, and mesh_count are the counts of their respective infos
+*/
+
+internal u64 gltf_file_get_total_texture_data_size(GLTF_File* gltf)
+{
+    u64 texture_data_size = 0;
+    for (u32 i = 0; i < gltf->texture_count; ++i)
+    {
+        GLTF_Texture* t = gltf->textures + i;
+        if (t->dds_extension.dds_image_source_index == 0)
+        {
+            fprintf(stderr, "ERROR: texture %u is NOT supported (only support DDS textures)!\n", i);
+        }
+        else
+        {
+            GLTF_Image* image = gltf->images + t->dds_extension.dds_image_source_index - 1;
+            if (image->uri.text)
+            {
+                // TODO: This filepath needs to be relative to the GLTF file
+                // texture_data_size = file_size(image->uri.text);
+            }
+            else if (image->mime_type.text)
+            {
+                assert(string_equals(image->mime_type.text, "image/vnd-ms.dds"));
+                texture_data_size += gltf->buffer_views[image->buffer_view_index].size;
+            }
+            else
+            {
+                fprintf(stderr, "ERROR: unable to find source data for texture %u (source: %u)!\n", i, t->dds_extension.dds_image_source_index - 1);
+            }
+        }
+    }
+
+    // NOTE: We don't want the DDS file header to be in the tsu file
+    return texture_data_size - (sizeof(u32) + sizeof(DDS_Header)) * gltf->texture_count;
+}
+
+internal u64 gltf_file_get_total_mesh_data_size(GLTF_File* gltf)
+{
+    u64 mesh_data_size = 0;
+    for (u32 i = 0; i < gltf->mesh_count; ++i)
+    {
+        GLTF_Mesh* gltf_mesh = gltf->meshes + i;
+        for (u32 j = 0; j < gltf_mesh->primitive_count; ++j)
+        {
+            GLTF_Primitive* primitive = gltf_mesh->primitives + j;
+            if (primitive->indices_accessor_index == 0 || primitive->mode != GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST || primitive->attribute_count == 0)
+            {
+                fprintf(stderr, "ERROR: mesh %u, primitive %u is NOT supported (only support indexed triangled meshes)!\n", i, j);
+            }
+            else
+            {
+                GLTF_Accessor* index_buffer_accessor = gltf->accessors + primitive->indices_accessor_index - 1;
+                if (index_buffer_accessor->buffer_view_index == 0)
+                {
+                    fprintf(stderr, "ERROR: unable to find source index data for mesh %u, primitive %u (source: %u)!\n", i, j, primitive->indices_accessor_index - 1);
+                }
+                else
+                {
+                    assert(index_buffer_accessor->type == GLTF_DATA_TYPE_SCALAR);
+
+                    u32 supported_attributes = 0;
+                    for (u32 k = 0; k < primitive->attribute_count; ++k)
+                    {
+                        GLTF_Attribute a = primitive->attributes[k];
+                        if ((a.type != GLTF_ATTRIBUTE_TYPE_POSITION || (a.type == GLTF_ATTRIBUTE_TYPE_POSITION && a.set_index != 0)))// ||
+                            // (a.type != GLTF_ATTRIBUTE_TYPE_NORMAL || (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL && a.set_index != 0)) ||
+                            // (a.type != GLTF_ATTRIBUTE_TYPE_TANGENT || (a.type == GLTF_ATTRIBUTE_TYPE_TANGENT && a.set_index != 0)) ||
+                            // (a.type != GLTF_ATTRIBUTE_TYPE_TEXCOORD || (a.type == GLTF_ATTRIBUTE_TYPE_TEXCOORD && a.set_index != 0)))
+                        {
+                            fprintf(stderr, "ERROR: mesh %u, primitive %u has unsupported vertex attribute type: %d, index: %u!\n", i, j, a.type, a.set_index);
+                        }
+                        else
+                        {
+                            supported_attributes++;
+                        }
+                    }
+                    if (supported_attributes > 0)
+                    {
+                        GLTF_Accessor* attribute0_accessor = gltf->accessors + primitive->attributes[0].accessor_index;
+                        if (attribute0_accessor->buffer_view_index == 0)
+                        {
+                            fprintf(stderr, "ERROR: unable to find source vertex data for mesh %u, primitive %u (source: %u)!\n", i, j, primitive->attributes[0].accessor_index);
+                        }
+                        else
+                        {
+                            mesh_data_size += sizeof(Vertex) * attribute0_accessor->element_count + sizeof(u32) * index_buffer_accessor->element_count;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return mesh_data_size;
+}
+
+internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
+{
+    for (u32 i = 0; i < gltf->mesh_count; ++i)
+    {
+        GLTF_Mesh* gltf_mesh = gltf->meshes + i;
+
+        Mesh_Info* tsu_mesh = tsu->meshes + tsu->current_mesh_index + i;
+        tsu_mesh->asset.id = tsu->current_mesh_index + i;
+        tsu_mesh->sub_mesh_offset = tsu->current_sub_mesh_index;
+        tsu_mesh->sub_mesh_count = gltf_mesh->primitive_count;
+
+        for (u32 j = 0; j < gltf_mesh->primitive_count; ++j)
+        {
+            GLTF_Primitive* primitive = gltf_mesh->primitives + j;
+            Sub_Mesh_Info* tsu_sub_mesh = tsu->sub_meshes + tsu->current_sub_mesh_index + j;
+            tsu_sub_mesh->data_offset = tsu->current_mesh_data_offset + tsu->header.mesh_data_offset;
+            tsu_sub_mesh->material_index = primitive->material_index + (primitive->material_index == 0 ? 0 : tsu->current_material_index);
+
+            if (primitive->indices_accessor_index != 0 && primitive->mode == GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST && primitive->attribute_count > 0)
+            {
+                GLTF_Accessor* index_buffer_accessor = gltf->accessors + primitive->indices_accessor_index - 1;
+                if (index_buffer_accessor->buffer_view_index != 0)
+                {
+                    u64 vertex_count = gltf->accessors[primitive->attributes[0].accessor_index].element_count;
+
+                    for (u32 k = 0; k < primitive->attribute_count; ++k)
+                    {
+                        GLTF_Attribute a = primitive->attributes[k];
+                        if ((a.type == GLTF_ATTRIBUTE_TYPE_POSITION && a.set_index == 0))// ||
+                            // (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL && a.set_index != 0) ||
+                            // (a.type == GLTF_ATTRIBUTE_TYPE_TANGENT && a.set_index != 0) ||
+                            // (a.type == GLTF_ATTRIBUTE_TYPE_TEXCOORD && a.set_index != 0))
+                        {
+                            GLTF_Accessor* vertex_accessor = gltf->accessors + a.accessor_index;
+                            if (vertex_accessor->buffer_view_index != 0)
+                            {
+                                assert(vertex_accessor->element_count == vertex_count);
+
+                                GLTF_Buffer_View* buffer_view = gltf->buffer_views + vertex_accessor->buffer_view_index - 1;
+                                GLTF_Buffer* buffer = gltf->buffers + buffer_view->buffer_index;
+                                if (buffer->uri.text)
+                                {
+                                    // TODO: Read buffer file
+                                    // TODO: This filepath needs to be relative to the GLTF file
+                                }
+                                else
+                                {
+                                    u8* gltf_buffer_data = gltf->bin + buffer_view->offset + vertex_accessor->offset;
+                                    if (a.type == GLTF_ATTRIBUTE_TYPE_POSITION)
+                                    {
+                                        u32 stride = buffer_view->stride == 0 ? gltf_sizeof_data_type_with_component_type(vertex_accessor->data_type, vertex_accessor->component_type) : buffer_view->stride;
+                                        for (u32 vertex_index = 0; vertex_index < vertex_count; ++vertex_index)
+                                        {
+                                            v3* position = (v3*)(gltf_buffer_data + stride * vertex_index);
+
+                                            Vertex* v = (Vertex*)(tsu->mesh_data + tsu->current_mesh_data_offset) + vertex_index;
+                                            v->position = v4{position->x, position->y, position->z, 1.0f};
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    tsu_sub_mesh->index_offset = sizeof(Vertex) * vertex_count;
+                    tsu_sub_mesh->index_count = index_buffer_accessor->element_count;
+
+                    tsu->current_mesh_data_offset += tsu_sub_mesh->index_offset;
+
+                    GLTF_Buffer_View* index_buffer_view = gltf->buffer_views + index_buffer_accessor->buffer_view_index - 1;
+                    GLTF_Buffer* index_buffer = gltf->buffers + index_buffer_view->buffer_index;
+                    if (index_buffer->uri.text)
+                    {
+                        // TODO: Read buffer file
+                        // TODO: This filepath needs to be relative to the GLTF file
+                    }
+                    else
+                    {
+                        u8* gltf_buffer_data = gltf->bin + index_buffer_view->offset + index_buffer_accessor->offset;
+                        u32 stride = index_buffer_view->stride == 0 ? gltf_sizeof_data_type_with_component_type(index_buffer_accessor->data_type, index_buffer_accessor->component_type) : index_buffer_view->stride;
+                        assert(stride == sizeof(u32)); // NOTE: Index type needs to be U32
+
+                        for (u32 element_index = 0; element_index < index_buffer_accessor->element_count; ++element_index)
+                        {
+                            u32 index = *(u32*)(gltf_buffer_data + stride * element_index);
+                            *((u32*)(tsu->mesh_data + tsu->current_mesh_data_offset) + element_index) = index;
+                        }
+                    }
+
+                    tsu->current_mesh_data_offset += sizeof(u32) * index_buffer_accessor->element_count;
+                }
+            }
+            tsu->current_sub_mesh_index++;
+        }
+        tsu->current_mesh_index++;
+    }
+}
+
+internal void gltf_to_tsu_materials(GLTF_File* gltf, TSU_File* tsu)
+{
+    for (u32 i = 0; i < gltf->material_count; ++i)
+    {
+        GLTF_Material* gltf_material = gltf->materials + i;
+
+        Material_Info* tsu_material = tsu->materials + tsu->current_material_index + i;
+        tsu_material->asset.id = tsu->current_material_index + i;
+        tsu_material->material.albedo_texture_id = gltf_material->pbr_metallic_roughness.base_color_texture.texture_index + (gltf_material->pbr_metallic_roughness.base_color_texture.texture_index == 0 ? 0 : tsu->current_texture_index);
+        tsu_material->material.normal_texture_id = gltf_material->normal_texture.texture_index + (gltf_material->normal_texture.texture_index == 0 ? 0 : tsu->current_texture_index);
+
+        // TODO: Use new Material_Info definition
+        tsu_material->material.metallic_texture_id = gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index + (gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index == 0 ? 0 : tsu->current_texture_index);
+        tsu_material->material.roughness_texture_id = gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index + (gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index == 0 ? 0 : tsu->current_texture_index);
+        // tsu_material->material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_index);
+        tsu_material->material.base_color_factor = gltf_material->pbr_metallic_roughness.base_color_factor;
+        // tsu_material->material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
+        // tsu_material->material.roughness_factor = gltf_material->pbr_metallic_roughness.roughness_factor;
+
+        tsu->current_material_index++;
+    }
+}
+
+internal void gltf_to_tsu_textures(GLTF_File* gltf, TSU_File* tsu)
+{
+    for (u32 i = 0; i < gltf->texture_count; ++i)
+    {
+        GLTF_Texture* gltf_texture = gltf->textures + i;
+        Texture_Info* tsu_texture = tsu->textures + tsu->current_texture_index + i;
+        tsu_texture->asset.id = tsu->current_texture_index + i;
+        tsu->current_texture_index++;
+
+        // NOTE: If the texture source is not DDS we will still keep the texture info at the index
+        // TODO: Remove texture infos that we don't use?
+        if (gltf_texture->dds_extension.dds_image_source_index != 0)
+        {
+            GLTF_Image* image = gltf->images + gltf_texture->dds_extension.dds_image_source_index - 1;
+            if (image->uri.text)
+            {
+                // TODO: This filepath needs to be relative to the GLTF file
+                // texture_data_size = file_size(image->uri.text);
+            }
+            else if (image->mime_type.text)
+            {
+                DDS_Image dds = {gltf->bin + gltf->buffer_views[image->buffer_view_index].offset};
+                if (!dds_load_image(&dds))
+                {
+                    fprintf(stderr, "ERROR: unable to load texture %u!\n", i);
+                }
+                else
+                {
+                    tsu_texture->data_offset = tsu->current_texture_data_offset + tsu->header.texture_data_offset;
+                    tsu_texture->width = dds.levels[0].width;
+                    tsu_texture->height = dds.levels[0].height;
+                    tsu_texture->mipmap_count = dds.mipmap_count;
+                    tsu_texture->size = dds.size;
+
+                    copy_memory(tsu->texture_data + tsu->current_texture_data_offset, dds.levels[0].data, dds.size);
+                    tsu->current_texture_data_offset += dds.size;
+                }
+            }
+        }
+    }
+}
+
+internal TSU_File create_tsu_file(GLTF_File* gltf_files, u32 gltf_file_count)
+{
+    TSU_File tsu_file = {};
+    tsu_file.header.magic = TSU_MAGIC;
+    tsu_file.header.version = TSU_VERSION;
+
+    for (u32 i = 0; i < gltf_file_count; ++i)
+    {
+        GLTF_File* gltf = gltf_files + i;
+        assert(gltf->texture_count == gltf->.image_count);
+
+        tsu_file.header.texture_count += gltf->texture_count;
+        tsu_file.header.material_count += gltf->material_count;
+        tsu_file.header.mesh_count += gltf->mesh_count;
+
+        for (u32 j = 0; j < gltf->mesh_count; ++j)
+        {
+            tsu_file.sub_mesh_count += gltf->meshes[j].primitive_count;
+        }
+
+        tsu_file.texture_data_size += gltf_file_get_total_texture_data_size(gltf);
+        tsu_file.mesh_data_size += gltf_file_get_total_mesh_data_size(gltf);
+    }
+
+    tsu_file.texture_data = (u8*)malloc(tsu_file.texture_data_size);
+    tsu_file.mesh_data = (u8*)malloc(tsu_file.mesh_data_size);
+
+    // NOTE: Index 0 will be the 'null' version of the asset
+    tsu_file.header.texture_count++;
+    tsu_file.header.material_count++;
+    tsu_file.header.mesh_count++;
+
+    tsu_file.current_texture_index = 1;
+    tsu_file.current_material_index = 1;
+    tsu_file.current_mesh_index = 1;
+
+    tsu_file.header.texture_data_offset = sizeof(TSU_File_Header) + sizeof(Texture_Info) * tsu_file.header.texture_count + sizeof(Material_Info) * tsu_file.header.material_count + sizeof(Mesh_Info) * tsu_file.header.mesh_count + sizeof(Sub_Mesh_Info) * tsu_file.sub_mesh_count;
+    tsu_file.current_texture_data_offset = 0;
+
+    tsu_file.header.mesh_data_offset = tsu_file.header.texture_data_offset + tsu_file.texture_data_size;
+    tsu_file.current_mesh_data_offset = 0;
+
+    tsu_file.textures = (Texture_Info*)malloc(sizeof(Texture_Info) * tsu_file.header.texture_count);
+    tsu_file.materials = (Material_Info*)malloc(sizeof(Material_Info) * tsu_file.header.material_count);
+    tsu_file.meshes = (Mesh_Info*)malloc(sizeof(Mesh_Info) * tsu_file.header.mesh_count);
+    tsu_file.sub_meshes = (Sub_Mesh_Info*)malloc(sizeof(Sub_Mesh_Info) * tsu_file.sub_mesh_count);
+    tsu_file.current_sub_mesh_index = 0;
+
+    // NOTE: We still need to initalize the 'null' assets in the engine
+    *tsu_file.textures = {};
+    *tsu_file.materials = {};
+    *tsu_file.meshes = {};
+
+    for (u32 i = 0; i < gltf_file_count; ++i)
+    {
+        GLTF_File* gltf = gltf_files + i;
+
+        gltf_to_tsu_meshes(gltf, &tsu_file);
+        gltf_to_tsu_materials(gltf, &tsu_file);
+        gltf_to_tsu_textures(gltf, &tsu_file);
+    }
+    assert(tsu_file.current_texture_data_offset == tsu_file.texture_data_size);
+    assert(tsu_file.current_mesh_data_offset == tsu_file.mesh_data_size);
+
+    return tsu_file;
+}
+
+internal b32 write_tsu_file(TSU_File* tsu_file, char* filename)
+{
+    FILE* file = fopen(filename, "wb");
+    if (!file)
+    {
+        return false;
+    }
+
+    fwrite(&tsu_file->header, sizeof(TSU_File_Header), 1, file);
+    fwrite(tsu_file->textures, sizeof(Texture_Info) * tsu_file->header.texture_count, 1, file);
+    fwrite(tsu_file->materials, sizeof(Material_Info) * tsu_file->header.material_count, 1, file);
+    fwrite(tsu_file->meshes, sizeof(Mesh_Info) * tsu_file->header.mesh_count, 1, file);
+    fwrite(tsu_file->sub_meshes, sizeof(Sub_Mesh_Info) * tsu_file->sub_mesh_count, 1, file);
+    fwrite(tsu_file->texture_data, tsu_file->texture_data_size, 1, file);
+    fwrite(tsu_file->mesh_data, tsu_file->mesh_data_size, 1, file);
+    fclose(file);
+    return true;
+};
+
 int main(int argc, char* argv[])
 {
-    char* gltf_json = (char*)read_file(argv[1]);
-
-    GLTF_File gltf_file;
-    if (!parse_gltf(gltf_json, &gltf_file))
+    if (argc < 3)
     {
-        fprintf(stderr, "Unable to load GLTF file: %s\n", argv[1]);
+        printf("Usage: asset.builder.exe gltf_or_glb_filename output_filename\n");
         return 1;
+    }
+
+    char* intput_filename = argv[1];
+    char* output_filename = argv[2];
+
+    u32 filename_length = 0;
+    for (char* f = intput_filename; *f; ++f, ++filename_length);
+
+    GLTF_File gltf_file = {};
+    if (string_equals(intput_filename + filename_length - 5, ".gltf"))
+    {
+        gltf_file.json = (char*)read_file(intput_filename);
+    }
+    else if (string_equals(intput_filename + filename_length - 4, ".glb"))
+    {
+        u8* glb = read_file(intput_filename);
+        GLTF_Binary_File_Header* header = (GLTF_Binary_File_Header*)glb;
+        GLTF_Binary_Chunk_Header* json_header = (GLTF_Binary_Chunk_Header*)(glb + sizeof(GLTF_Binary_File_Header));
+        GLTF_Binary_Chunk_Header* bin_header = (GLTF_Binary_Chunk_Header*)(glb + sizeof(GLTF_Binary_File_Header) + sizeof(GLTF_Binary_Chunk_Header) + json_header->length);
+
+        if (header->magic != GLTF_BINARY_MAGIC || header->version != 2 || json_header->type != GLTF_BINARY_CHUNK_TYPE_JSON || bin_header->type != GLTF_BINARY_CHUNK_TYPE_BIN)
+        {
+            fprintf(stderr, "ERROR: input file is not a valid '.glb' (binary gltf v2) file!\n");
+            return 1;
+        }
+
+        gltf_file.json = (char*)(glb + sizeof(GLTF_Binary_File_Header) + sizeof(GLTF_Binary_Chunk_Header));
+        gltf_file.json[json_header->length] = 0;
+
+        gltf_file.bin = (glb + sizeof(GLTF_Binary_File_Header) + sizeof(GLTF_Binary_Chunk_Header) * 2 + json_header->length);
     }
     else
     {
-        printf("Finished parsing GLTF file: %s\n", argv[1]);
+        fprintf(stderr, "ERROR: input file is not a '.gltf' or '.glb' file!\n");
+        return 1;
     }
+
+    if (!parse_gltf(&gltf_file))
+    {
+        fprintf(stderr, "ERROR: unable to parse GLTF file: %s!\n", argv[1]);
+        return 1;
+    }
+    printf("Finished parsing GLTF file: %s\n", argv[1]);
+
+    TSU_File tsu_file = create_tsu_file(&gltf_file, 1);
+    if (!write_tsu_file(&tsu_file, output_filename))
+    {
+        fprintf(stderr, "ERROR: unable to write .tsu file!\n");
+        return 1;
+    }
+    printf("Successfully create .tsu file!\n");
+
     return 0;
 }

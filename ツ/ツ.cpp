@@ -59,7 +59,7 @@ void game_init(Game_State* game_state)
         op->material = material_buffer;
         Material* mem = (Material*)op->memory;
         mem->albedo_texture_id = 0;
-        mem->base_color = v4{1.0f, 0.0f, 0.0f, 1.0f};
+        mem->base_color_factor = v4{1.0f, 0.0f, 0.0f, 1.0f};
         renderer_queue_transfer(op);
     }
 
@@ -82,7 +82,7 @@ void game_init(Game_State* game_state)
         op->material = material_buffer2;
         Material* mem = (Material*)op->memory;
         mem->albedo_texture_id = 1;
-        mem->base_color = v4{0.5f, 0.1f, 0.3f, 1.0f};
+        mem->base_color_factor = v4{0.5f, 0.1f, 0.3f, 1.0f};
         renderer_queue_transfer(op);
     }
 
