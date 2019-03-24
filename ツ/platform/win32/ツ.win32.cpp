@@ -248,6 +248,13 @@ void __stdcall WinMainCRTStartup()
         ExitProcess(1);
     }
 
+    if (!init_asset_system(&platform_arena))
+    {
+        // TODO: Logging
+        DEBUG_printf("Failed to initialize asset system!\n");
+        ExitProcess(1);
+    }
+
     Frame_Parameters frames[MAX_FRAMES] = {};
     for (u64 i = 0; i < MAX_FRAMES; ++i)
     {

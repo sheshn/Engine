@@ -6,6 +6,7 @@ struct Renderer_Buffer
     u32 reserved;
 };
 
+// TODO: Renderer_Texture needs the format since textures can be either BC5 (normal map) or BC7_SRGB (everything else)
 struct Renderer_Texture
 {
     u32 id;
@@ -18,7 +19,8 @@ typedef Renderer_Buffer Renderer_Transform;
 
 struct Vertex
 {
-    v4 position;
+    v3 position;
+    v2 uv0;
 };
 
 struct Material

@@ -533,7 +533,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VK_CALL(vkCreatePipelineLayout(vulkan_context.device, &pipeline_layout_create_info, NULL, &renderer.pipeline_layout));
 
     VkVertexInputBindingDescription vertex_binding_descriptions[] = {{0, sizeof(Draw_Instance_Data), VK_VERTEX_INPUT_RATE_INSTANCE}, {1, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
-    VkVertexInputAttributeDescription vertex_attribute_descriptions[] = {{0, 0, VK_FORMAT_R32G32_UINT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}};
+    VkVertexInputAttributeDescription vertex_attribute_descriptions[] = {{0, 0, VK_FORMAT_R32G32_UINT, 0}, {1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}, {2, 1, VK_FORMAT_R32G32_SFLOAT, 12}};
 
     VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {};
     vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -653,6 +653,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkUpdateDescriptorSets(vulkan_context.device, array_count(storage_writes), storage_writes, 0, NULL);
 
     // NOTE: Using BC7 format for all 2D textures for now
+    // TODO: Need to support normal maps which will have BC5 format. Also use SRGB for BC7
     renderer.texture_2d_format = VK_FORMAT_BC7_UNORM_BLOCK;
 
     // NOTE: Creating a dummy image to get memory type bits in order to allocate texture memory.
@@ -769,6 +770,7 @@ internal void recreate_swapchain(u32 width, u32 height)
         image_count = surface_capabilities.maxImageCount;
     }
 
+    // TODO: Use VK_FORMAT_B8G8R8A8_SRGB
     vulkan_context.surface_format = surface_formats[0];
     if (format_count == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
     {
@@ -1346,13 +1348,14 @@ void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_co
     (*renderer.current_render_frame->draw_call_count)++;
 
     // NOTE: The vertices and indices are in the same buffer.
-    // We must use UINT32 as the index type, which is the same size as a float, otherwise we wouldn't know where the first index is!
-    // We could separate the vertex and index buffer. Leaving it for now since we probably want to use UINT32 anyways.
+    // We must use UINT32 as the index type, which is the same size as a float, otherwise we wouldn't know where the first index is! (Vertex must also only contain floats/32 bit values)
+    // We also must pad the mesh's size (vertices + indices) to be a multiple of sizeof(Vertex) otherwise we wouldn't know what the correct vertex offset is!
+    // We can get rid of this limitation if we separate the vertex and index buffer.
     VkDrawIndexedIndirectCommand* draw_command = (VkDrawIndexedIndirectCommand*)memory_arena_reserve(&renderer.current_render_frame->draw_command_arena, sizeof(VkDrawIndexedIndirectCommand));
     draw_command->indexCount = index_count;
     draw_command->instanceCount = instance_count;
-    draw_command->vertexOffset = renderer.mesh_buffers[buffer.id].offset;
-    draw_command->firstIndex = (draw_command->vertexOffset + index_offset) / sizeof(u32) / sizeof(u32); // TODO: This is probably wrong!
+    draw_command->vertexOffset = renderer.mesh_buffers[buffer.id].offset / sizeof(Vertex);
+    draw_command->firstIndex = (renderer.mesh_buffers[buffer.id].offset + index_offset) / sizeof(u32);
     draw_command->firstInstance = renderer.current_render_frame->draw_instance_count;
 
     for (u32 i = 0; i < instance_count; ++i)

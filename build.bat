@@ -10,7 +10,7 @@ if not exist %INTERMEDIATES% mkdir %INTERMEDIATES%
 
 pushd %BUILD_DIR%
 :: Asset Builder
-clang ..\tools\%CURRENT_FOLDER%.asset.builder.cpp -o%CURRENT_FOLDER%.asset.builder.exe -D_CRT_SECURE_NO_WARNINGS -DUNICODE -O0 -g -gcodeview -gno-column-info -fno-cxx-exceptions -Wno-writable-strings -Wno-switch --for-linker -machine:x64 --for-linker -incremental:no --for-linker -opt:ref --for-linker -subsystem:console
+clang ..\tools\%CURRENT_FOLDER%.asset.builder.cpp -o%CURRENT_FOLDER%.asset.builder.exe -D_CRT_SECURE_NO_WARNINGS -DUNICODE -DDEBUG -O0 -g -gcodeview -gno-column-info -fno-cxx-exceptions -Wno-writable-strings -Wno-switch --for-linker -machine:x64 --for-linker -incremental:no --for-linker -opt:ref --for-linker -subsystem:console
 
 :: Vulkan Generator
 :: clang ..\tools\%CURRENT_FOLDER%.vulkan.generator.cpp -o%CURRENT_FOLDER%.vulkan.generator.exe -D_CRT_SECURE_NO_WARNINGS -DUNICODE -O3 -g -gcodeview -gno-column-info -fno-cxx-exceptions -Wno-writable-strings -Wno-switch --for-linker -machine:x64 --for-linker -incremental:no --for-linker -opt:ref --for-linker -subsystem:console
