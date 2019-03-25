@@ -4,7 +4,7 @@ struct Assets
 {
     Memory_Arena* memory_arena;
 
-    TSU_File_Header asset_file_header;
+    TSU_Header tsu_header;
 
     // TODO: Remove this with file streaming
     u8* asset_file_data;
@@ -28,19 +28,19 @@ b32 init_asset_system(Memory_Arena* memory_arena)
         return false;
     }
 
-    assets.asset_file_header = *(TSU_File_Header*)assets.asset_file_data;
-    if (assets.asset_file_header.magic != TSU_MAGIC || assets.asset_file_header.version != TSU_VERSION)
+    assets.tsu_header = *(TSU_Header*)assets.asset_file_data;
+    if (assets.tsu_header.magic != TSU_MAGIC || assets.tsu_header.version != TSU_VERSION)
     {
-        DEBUG_printf("Asset file is not a correct .tsu file (magic: %u, version: %u)!\n", assets.asset_file_header.magic, assets.asset_file_header.version);
+        DEBUG_printf("Asset file is not a correct .tsu file (magic: %u, version: %u)!\n", assets.tsu_header.magic, assets.tsu_header.version);
         return false;
     }
 
-    assets.textures = (Texture_Info*)(assets.asset_file_data + sizeof(TSU_File_Header));
-    assets.materials = (Material_Info*)((u8*)assets.textures + sizeof(Texture_Info) * assets.asset_file_header.texture_count);
-    assets.meshes = (Mesh_Info*)((u8*)assets.materials + sizeof(Material_Info) * assets.asset_file_header.material_count);
+    assets.textures = (Texture_Info*)(assets.asset_file_data + sizeof(TSU_Header));
+    assets.materials = (Material_Info*)((u8*)assets.textures + sizeof(Texture_Info) * assets.tsu_header.texture_count);
+    assets.meshes = (Mesh_Info*)((u8*)assets.materials + sizeof(Material_Info) * assets.tsu_header.material_count);
 
     Mesh_Info mesh = assets.meshes[1];
-    Sub_Mesh_Info* sub_mesh = (Sub_Mesh_Info*)((u8*)assets.meshes + sizeof(Mesh_Info) * assets.asset_file_header.mesh_count) + mesh.sub_mesh_offset;
+    Sub_Mesh_Info* sub_mesh = (Sub_Mesh_Info*)((u8*)assets.meshes + sizeof(Mesh_Info) * assets.tsu_header.mesh_count) + mesh.sub_mesh_offset;
     Material_Info* material = assets.materials + sub_mesh->material_index;
     Texture_Info* texture = assets.textures + material->material.albedo_texture_id;
 

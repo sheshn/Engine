@@ -23,7 +23,10 @@ struct Input
     Input_Button_State button_left;
     Input_Button_State button_right;
 
-    v3 mouse_position;
+    Input_Button_State mouse_button_left;
+    Input_Button_State mouse_button_right;
+
+    v2 mouse_position;
     v3 mouse_delta;
 };
 

@@ -1707,7 +1707,7 @@ internal b32 parse_gltf(GLTF_File* gltf)
 
 struct TSU_File
 {
-    TSU_File_Header header;
+    TSU_Header header;
 
     Texture_Info*  textures;
     u32            current_texture_index;
@@ -2089,7 +2089,7 @@ internal TSU_File create_tsu_file(GLTF_File* gltf_files, u32 gltf_file_count)
     tsu_file.current_material_index = 1;
     tsu_file.current_mesh_index = 1;
 
-    tsu_file.header.texture_data_offset = sizeof(TSU_File_Header) + sizeof(Texture_Info) * tsu_file.header.texture_count + sizeof(Material_Info) * tsu_file.header.material_count + sizeof(Mesh_Info) * tsu_file.header.mesh_count + sizeof(Sub_Mesh_Info) * tsu_file.sub_mesh_count;
+    tsu_file.header.texture_data_offset = sizeof(TSU_Header) + sizeof(Texture_Info) * tsu_file.header.texture_count + sizeof(Material_Info) * tsu_file.header.material_count + sizeof(Mesh_Info) * tsu_file.header.mesh_count + sizeof(Sub_Mesh_Info) * tsu_file.sub_mesh_count;
     tsu_file.current_texture_data_offset = 0;
 
     tsu_file.header.mesh_data_offset = tsu_file.header.texture_data_offset + tsu_file.texture_data_size;
@@ -2128,7 +2128,7 @@ internal b32 write_tsu_file(TSU_File* tsu_file, char* filename)
         return false;
     }
 
-    fwrite(&tsu_file->header, sizeof(TSU_File_Header), 1, file);
+    fwrite(&tsu_file->header, sizeof(TSU_Header), 1, file);
     fwrite(tsu_file->textures, sizeof(Texture_Info) * tsu_file->header.texture_count, 1, file);
     fwrite(tsu_file->materials, sizeof(Material_Info) * tsu_file->header.material_count, 1, file);
     fwrite(tsu_file->meshes, sizeof(Mesh_Info) * tsu_file->header.mesh_count, 1, file);

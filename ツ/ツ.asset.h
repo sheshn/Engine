@@ -4,7 +4,7 @@ internal u32 TSU_MAGIC = 0xE383842E; // ツ.
 internal u32 TSU_VERSION = 1;
 
 #pragma pack(push, 1)
-struct TSU_File_Header
+struct TSU_Header
 {
     u32 magic;
     u32 version;

@@ -128,6 +128,8 @@ HWND create_window()
 
 void process_window_messages(HWND window_handle, Frame_Parameters* frame_params)
 {
+    frame_params->input.mouse_delta = {};
+
     MSG message;
     while (PeekMessage(&message, window_handle, 0, 0, PM_REMOVE))
     {
@@ -161,6 +163,40 @@ void process_window_messages(HWND window_handle, Frame_Parameters* frame_params)
                 frame_params->input.button_right = {key_is_down, key_was_down && !key_is_down};
                 break;
             };
+        } break;
+        case WM_LBUTTONDOWN:
+        {
+            SetCapture(window_handle);
+            frame_params->input.mouse_button_left.is_down = true;
+        } break;
+        case WM_LBUTTONUP:
+        {
+            ReleaseCapture();
+            frame_params->input.mouse_button_left.is_down = false;
+        } break;
+        case WM_RBUTTONDOWN:
+        {
+            SetCapture(window_handle);
+            frame_params->input.mouse_button_right.is_down = true;
+        } break;
+        case WM_RBUTTONUP:
+        {
+            ReleaseCapture();
+            frame_params->input.mouse_button_right.is_down = false;
+        } break;
+        case WM_MOUSEWHEEL:
+        {
+            s32 mouse_z = (s16)(message.wParam >> 16);
+            frame_params->input.mouse_delta.z = (f32)mouse_z;
+        } break;
+        case WM_MOUSEMOVE:
+        {
+            s32 mouse_x = (s32)message.lParam & 0xFFFF;
+            s32 mouse_y = (s32)(message.lParam >> 16) & 0xFFFF;
+
+            frame_params->input.mouse_position = {(f32)mouse_x, (f32)mouse_y};
+            frame_params->input.mouse_delta.x = frame_params->input.mouse_position.x - frame_params->previous->input.mouse_position.x;
+            frame_params->input.mouse_delta.y = frame_params->input.mouse_position.y - frame_params->previous->input.mouse_position.y;
         } break;
         default:
             TranslateMessage(&message);
@@ -265,6 +301,8 @@ void __stdcall WinMainCRTStartup()
     Frame_Parameters* current_frame = &frames[0];
     current_frame->frame_number = 0;
 
+    current_frame->camera.rotation = {0, 0, 0, 1};
+
     LARGE_INTEGER performance_frequency;
     QueryPerformanceFrequency(&performance_frequency);
 
@@ -274,7 +312,6 @@ void __stdcall WinMainCRTStartup()
     running = true;
     while (running)
     {
-        current_frame->input = {};
         process_window_messages(window_handle, current_frame);
 
         current_frame->next->frame_number = current_frame->frame_number + 1;
@@ -301,6 +338,7 @@ void __stdcall WinMainCRTStartup()
         }
 
         current_frame->camera = current_frame->previous->camera;
+        current_frame->input = current_frame->previous->input;
     }
 
     ExitProcess(0);
