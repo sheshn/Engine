@@ -62,7 +62,7 @@ void game_update(Frame_Parameters* frame_params)
 
     frame_params->camera.position = normalize(v3{0, 0, -1} * frame_params->camera.rotation) * length(target - frame_params->camera.position);
     frame_params->camera.view = quat_to_m4x4(conjugate(frame_params->camera.rotation)) * translate(identity(), -1 * frame_params->camera.position);
-    frame_params->camera.projection = perspective_infinite(radians(90.0f), 4.0 / 3.0f, 0.01f);
+    frame_params->camera.projection = perspective_infinite(radians(90.0f), 16.0 / 9.0f, 0.01f);
 }
 
 void game_render(Frame_Parameters* frame_params)

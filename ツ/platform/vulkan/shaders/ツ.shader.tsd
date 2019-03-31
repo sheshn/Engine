@@ -62,13 +62,40 @@ layout Default_Layout_Fragment
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) flat in uv2 in_instance_data;
-    layout(location = 1) in vec2 in_uv0;
+    layout(location = 1) in v2 in_uv0;
 
-    layout(location = 0) out vec4 out_color;
+    layout(location = 0) out v4 out_color;
 };
 
 fragment(Default_Layout_Fragment) void default_fragment_shader()
 {
     Material material = materials[in_instance_data.y];
     out_color = texture(sampler2D(textures_2d[material.albedo_texture_index], texture_2d_sampler), in_uv0) * material.base_color_factor;
+}
+
+layout Final_Pass_Layout_Vertex
+{
+    layout(location = 0) out v2 out_uv;
+};
+
+vertex(Final_Pass_Layout_Vertex) void final_pass_vertex_shader()
+{
+    out_uv = v2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = v4(out_uv * 2.0 - 1.0, 0, 1.0);
+}
+
+layout Final_Pass_Layout_Fragment
+{
+    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
+    layout(set = 0, binding = 1) uniform texture2D color0_attachment;
+
+    layout(location = 0) in v2 in_uv;
+
+    layout(location = 0) out v4 out_color;
+};
+
+fragment(Final_Pass_Layout_Fragment) void final_pass_fragment_shader()
+{
+    // TODO: Tonemap!
+    out_color = texture(sampler2D(color0_attachment, texture_2d_sampler), in_uv);
 }
