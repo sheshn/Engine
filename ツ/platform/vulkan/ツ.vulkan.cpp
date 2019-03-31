@@ -606,6 +606,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {};
     rasterization_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization_state_create_info.cullMode = VK_CULL_MODE_FRONT_BIT;
+    rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo multisample_state_create_info = {};
     multisample_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -925,7 +927,7 @@ internal void recreate_swapchain(u32 window_width, u32 window_height)
     VkAttachmentDescription color_attachment = {};
     color_attachment.format = vulkan_context.surface_format.format;
     color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1529,6 +1531,32 @@ internal void resolve_pending_transfer_operations()
     }
 }
 
+internal VkRect2D aspect_ratio_corrected_render_area(u32 render_width, u32 render_height, u32 window_width, u32 window_height)
+{
+    VkRect2D result = {};
+    if (render_width > 0 && render_height > 0 && window_width > 0 && window_height > 0)
+    {
+        f32 width = (f32)window_height * (f32)render_width / render_height;
+        f32 height = (f32)window_width * (f32)render_height / render_width;
+
+        if (width >= (f32)window_width)
+        {
+            result.offset.x = 0;
+            result.offset.y = (u32)((window_height - height) / 2.0f);
+            result.extent.width = window_width;
+            result.extent.height = (u32)height;
+        }
+        else
+        {
+            result.offset.x = (u32)((window_width - width) / 2.0f);
+            result.offset.y = 0;
+            result.extent.width = (u32)width;
+            result.extent.height = window_height;
+        }
+    }
+    return result;
+}
+
 void renderer_begin_frame(Frame_Parameters* frame_params)
 {
     renderer.current_render_frame = &renderer.frame_resources[frame_params->frame_number % MAX_FRAME_RESOURCES];
@@ -1617,7 +1645,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
 
         VkClearValue clear_values[2] = {};
-        clear_values[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
+        clear_values[0].color = {0.3f, 0.3f, 0.3f, 1.0f};
         clear_values[1].depthStencil = {0.0f, 0};
 
         VkRenderPassBeginInfo render_pass_begin_info = {};
@@ -1636,10 +1664,10 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             VkDescriptorSet descriptor_sets[] = {renderer.descriptor_set, frame_resources->descriptor_set};
             vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
-            VkViewport viewport = {0.0f, 0.0f, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
+            VkViewport viewport = {0, 0, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
             vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
-            VkRect2D scissor = {{0, 0}, render_pass_begin_info.renderArea.extent};
+            VkRect2D scissor = render_pass_begin_info.renderArea;
             vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
 
             VkDeviceSize offsets[] = {frame_resources->draw_instance_offset, 0};
@@ -1655,19 +1683,19 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         {
             render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
             render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[frame_params->frame_number % MAX_FRAME_RESOURCES];
-            render_pass_begin_info.renderArea.offset = {0, 0};
-            render_pass_begin_info.renderArea.extent = vulkan_context.swapchain_extent;
-            render_pass_begin_info.clearValueCount = array_count(clear_values);
-            render_pass_begin_info.pClearValues = clear_values;
+
+            // NOTE: Setting the render pass's render area like this means we can't control the aspect ratio 'bars' with the clear color (they will always be black)
+            render_pass_begin_info.renderArea = aspect_ratio_corrected_render_area(renderer.render_width, renderer.render_height, vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
+            render_pass_begin_info.clearValueCount = 0;
 
             vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);
             vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline_layout, 0, 1, &frame_resources->final_pass_descriptor_set, 0, NULL);
 
-            VkViewport viewport = {0.0f, 0.0f, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
+            VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
             vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
-            VkRect2D scissor = {{0, 0}, render_pass_begin_info.renderArea.extent};
+            VkRect2D scissor = render_pass_begin_info.renderArea;
             vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
 
             vkCmdDraw(frame_resources->graphics_command_buffer, 3, 1, 0, 0);
