@@ -235,7 +235,7 @@ struct Frame_Resources
     VkSemaphore render_finished_semaphore;
     u32         swapchain_image_index;
 
-    VkDescriptorSet descriptor_set;
+    VkDescriptorSet uniforms_descriptor_set;
     VkDescriptorSet final_pass_descriptor_set;
 
     VkFramebuffer framebuffer;
@@ -303,11 +303,11 @@ struct Renderer
     Vulkan_Buffer*  mesh_buffers;
     Vulkan_Texture* textures;
 
+    VkDescriptorPool      descriptor_pool;
     VkDescriptorSetLayout static_descriptor_set_layout;
     VkDescriptorSetLayout per_frame_descriptor_set_layout;
     VkDescriptorSetLayout final_pass_descriptor_set_layout;
-    VkDescriptorPool      descriptor_pool;
-    VkDescriptorSet       descriptor_set;
+    VkDescriptorSet       static_descriptor_set;
 
     VkRenderPass main_render_pass;
 
@@ -555,7 +555,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     descriptor_set_allocate_info.pSetLayouts = set_layouts;
     VK_CALL(vkAllocateDescriptorSets(vulkan_context.device, &descriptor_set_allocate_info, descriptor_sets));
 
-    renderer.descriptor_set = descriptor_sets[0];
+    renderer.static_descriptor_set = descriptor_sets[0];
     for (u32 i = 0; i < MAX_FRAME_RESOURCES * 2; ++i)
     {
         if (i >= MAX_FRAME_RESOURCES)
@@ -564,7 +564,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         }
         else
         {
-            renderer.frame_resources[i].descriptor_set = descriptor_sets[i + 1];
+            renderer.frame_resources[i].uniforms_descriptor_set = descriptor_sets[i + 1];
         }
     }
 
@@ -692,8 +692,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     buffer_create_info.size = TRANSFER_MEMORY_SIZE;
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    // TODO: Replace with HOST_CACHED
-    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
 
     u64 aligned_uniforms_offset = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
     u64 aligned_frame_data_size = ((aligned_uniforms_offset + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
@@ -716,7 +715,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkDescriptorBufferInfo material_buffer_info = {renderer.storage_buffer, renderer.storage_materials_offset, MATERIALS_MEMORY_SIZE};
     VkWriteDescriptorSet material_storage_write = {};
     material_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    material_storage_write.dstSet = renderer.descriptor_set;
+    material_storage_write.dstSet = renderer.static_descriptor_set;
     material_storage_write.dstBinding = 2;
     material_storage_write.descriptorCount = 1;
     material_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -732,8 +731,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkUpdateDescriptorSets(vulkan_context.device, array_count(storage_writes), storage_writes, 0, NULL);
 
     // NOTE: Using BC7 format for all 2D textures for now
-    // TODO: Need to support normal maps which will have BC5 format. Also use SRGB for BC7
-    renderer.texture_2d_format = VK_FORMAT_BC7_UNORM_BLOCK;
+    // TODO: Need to support normal maps which will have BC5 format
+    renderer.texture_2d_format = VK_FORMAT_BC7_SRGB_BLOCK;
 
     // NOTE: Creating a dummy image to get memory type bits in order to allocate texture memory.
     // All 2D textures that will need to use this memory should have the same memory requirements.
@@ -761,7 +760,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkCommandPoolCreateInfo command_pool_create_info = {};
     command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     command_pool_create_info.queueFamilyIndex = vulkan_context.transfer_queue_index;
-    command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.transfer_command_pool));
 
     VkFenceCreateInfo fence_create_info = {};
@@ -810,7 +808,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         VkDescriptorBufferInfo buffer_info = {renderer.frame_resources_buffer, renderer.frame_resources[i].uniforms_offset, sizeof(Frame_Uniforms)};
         VkWriteDescriptorSet uniform_write = {};
         uniform_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        uniform_write.dstSet = renderer.frame_resources[i].descriptor_set;
+        uniform_write.dstSet = renderer.frame_resources[i].uniforms_descriptor_set;
         uniform_write.dstBinding = 0;
         uniform_write.descriptorCount = 1;
         uniform_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -849,17 +847,16 @@ internal void recreate_swapchain(u32 window_width, u32 window_height)
         image_count = surface_capabilities.maxImageCount;
     }
 
-    // TODO: Use VK_FORMAT_B8G8R8A8_SRGB
     vulkan_context.surface_format = surface_formats[0];
     if (format_count == 1 && surface_formats[0].format == VK_FORMAT_UNDEFINED)
     {
-        vulkan_context.surface_format = {VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+        vulkan_context.surface_format = {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
     }
     else
     {
         for (u32 i = 0; i < format_count; ++i)
         {
-            if (surface_formats[i].format == VK_FORMAT_B8G8R8A8_UNORM && surface_formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            if (surface_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && surface_formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             {
                 vulkan_context.surface_format = surface_formats[i];
                 break;
@@ -1248,6 +1245,14 @@ internal void resolve_pending_transfer_operations()
         VkImageMemoryBarrier* texture_barriers = memory_arena_reserve_array(vulkan_context.memory_arena, VkImageMemoryBarrier, transfer_operations);
         u32 texture_barrier_count = 0;
 
+        VkMappedMemoryRange transfer_memory_range = {};
+        transfer_memory_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        transfer_memory_range.offset = renderer.transfer_queue.dequeue_location;
+        transfer_memory_range.memory = renderer.transfer_memory_block.device_memory;
+
+        VkMappedMemoryRange transfer_memory_ranges[] = {transfer_memory_range, transfer_memory_range};
+        u32 transfer_memory_range_count = 1;
+
         for (u64 i = starting_index; i < transfer_operations; ++i)
         {
             Renderer_Transfer_Operation* operation = &renderer.transfer_queue.operations[i % array_count(renderer.transfer_queue.operations)];
@@ -1273,7 +1278,11 @@ internal void resolve_pending_transfer_operations()
                     create_new_mesh_buffer_copy = true;
                     last_material_index = S32_MIN;
                     last_xform_index = S32_MIN;
+
+                    transfer_memory_ranges[++transfer_memory_range_count - 1].offset = 0;
                 }
+
+                transfer_memory_ranges[transfer_memory_range_count - 1].size += operation->size + aligned_offset;
 
                 switch (operation->type)
                 {
@@ -1404,7 +1413,7 @@ internal void resolve_pending_transfer_operations()
                     VkDescriptorImageInfo image_info = {NULL, texture->image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                     VkWriteDescriptorSet texture_write = {};
                     texture_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    texture_write.dstSet = renderer.descriptor_set;
+                    texture_write.dstSet = renderer.static_descriptor_set;
                     texture_write.dstBinding = 1;
                     texture_write.dstArrayElement = operation->texture.id;
                     texture_write.descriptorCount = 1;
@@ -1429,6 +1438,14 @@ internal void resolve_pending_transfer_operations()
 
         if (mesh_copy_count > 0 || texture_barrier_count > 0 || material_copy_count > 0 || xform_copy_count)
         {
+            // NOTE: Make sure mapped memory ranges offset/size is a multiple of the nonCoherentAtomSize
+            for (u32 i = 0; i < array_count(transfer_memory_ranges); ++i)
+            {
+                transfer_memory_ranges[i].offset = transfer_memory_ranges[i].offset - transfer_memory_ranges[i].offset % vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+                transfer_memory_ranges[i].size = (transfer_memory_ranges[i].size + vulkan_context.physical_device_properties.limits.nonCoherentAtomSize - 1) & -(s64)vulkan_context.physical_device_properties.limits.nonCoherentAtomSize;
+            }
+            VK_CALL(vkFlushMappedMemoryRanges(vulkan_context.device, array_count(transfer_memory_ranges), transfer_memory_ranges));
+
             vkResetFences(vulkan_context.device, 1, &renderer.transfer_command_buffer_fence);
             vkResetCommandPool(vulkan_context.device, renderer.transfer_command_pool, 0);
 
@@ -1645,7 +1662,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
 
         VkClearValue clear_values[2] = {};
-        clear_values[0].color = {0.3f, 0.3f, 0.3f, 1.0f};
+        clear_values[0].color = {0.07f, 0.07f, 0.07f, 1.0f};
         clear_values[1].depthStencil = {0.0f, 0};
 
         VkRenderPassBeginInfo render_pass_begin_info = {};
@@ -1661,10 +1678,10 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
 
-            VkDescriptorSet descriptor_sets[] = {renderer.descriptor_set, frame_resources->descriptor_set};
+            VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set};
             vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
-            VkViewport viewport = {0, 0, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
+            VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
             vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
             VkRect2D scissor = render_pass_begin_info.renderArea;
@@ -1686,7 +1703,6 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
             // NOTE: Setting the render pass's render area like this means we can't control the aspect ratio 'bars' with the clear color (they will always be black)
             render_pass_begin_info.renderArea = aspect_ratio_corrected_render_area(renderer.render_width, renderer.render_height, vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
-            render_pass_begin_info.clearValueCount = 0;
 
             vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);
@@ -1762,6 +1778,13 @@ void renderer_resize(u32 window_width, u32 window_height)
 
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
+        VkFenceCreateInfo fence_create_info = {};
+        fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        vkDestroyFence(vulkan_context.device, renderer.frame_resources[i].graphics_command_buffer_fence, NULL);
+        VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_command_buffer_fence));
+
         renderer.frame_resources[i].should_record_command_buffer = true;
     }
+    vkResetCommandPool(vulkan_context.device, renderer.graphics_command_pool, 0);
 }

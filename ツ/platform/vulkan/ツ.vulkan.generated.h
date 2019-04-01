@@ -1204,8 +1204,8 @@ VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipelineLayout)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkPipeline)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkCommandPool)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSampler)
-VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSetLayout)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorPool)
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDescriptorSetLayout)
 typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void );
 typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddr)(VkInstance instance, const char*pName);
 typedef VkFlags VkDebugUtilsMessengerCreateFlagsEXT;
@@ -2005,13 +2005,6 @@ struct VkCommandPoolCreateInfo
 	VkCommandPoolCreateFlags flags;
 	uint32_t queueFamilyIndex;
 };
-enum VkCommandPoolCreateFlagBits
-{
-	VK_COMMAND_POOL_CREATE_TRANSIENT_BIT = 0x00000001,
-	VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x00000002,
-	VK_COMMAND_POOL_CREATE_PROTECTED_BIT = 0x00000004,
-	VK_COMMAND_POOL_CREATE_FLAG_BITS_MAX_ENUM = 0x7FFFFFFF
-};
 typedef VkResult (VKAPI_PTR *PFN_vkCreateCommandPool)(VkDevice device, const VkCommandPoolCreateInfo*pCreateInfo, const VkAllocationCallbacks*pAllocator, VkCommandPool *pCommandPool);
 typedef VkFlags VkFenceCreateFlags;
 struct VkFenceCreateInfo
@@ -2397,7 +2390,16 @@ struct VkImageMemoryBarrier
 	VkImage image;
 	VkImageSubresourceRange subresourceRange;
 };
+struct VkMappedMemoryRange
+{
+	VkStructureType sType;
+	const void*pNext;
+	VkDeviceMemory memory;
+	VkDeviceSize offset;
+	VkDeviceSize size;
+};
 #define VK_QUEUE_FAMILY_IGNORED (~0U)
+typedef VkResult (VKAPI_PTR *PFN_vkFlushMappedMemoryRanges)(VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange*pMemoryRanges);
 typedef VkResult (VKAPI_PTR *PFN_vkResetFences)(VkDevice device, uint32_t fenceCount, const VkFence*pFences);
 typedef VkFlags VkCommandPoolResetFlags;
 typedef VkResult (VKAPI_PTR *PFN_vkResetCommandPool)(VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags);
@@ -2466,15 +2468,6 @@ struct VkSubmitInfo
 	const VkSemaphore*pSignalSemaphores;
 };
 typedef VkResult (VKAPI_PTR *PFN_vkQueueSubmit)(VkQueue queue, uint32_t submitCount, const VkSubmitInfo*pSubmits, VkFence fence);
-struct VkMappedMemoryRange
-{
-	VkStructureType sType;
-	const void*pNext;
-	VkDeviceMemory memory;
-	VkDeviceSize offset;
-	VkDeviceSize size;
-};
-typedef VkResult (VKAPI_PTR *PFN_vkFlushMappedMemoryRanges)(VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange*pMemoryRanges);
 union VkClearColorValue
 {
 	float float32[4];
@@ -2541,6 +2534,7 @@ struct VkPresentInfoKHR
 	VkResult *pResults;
 };
 typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPresentInfoKHR*pPresentInfo);
+typedef void (VKAPI_PTR *PFN_vkDestroyFence)(VkDevice device, VkFence fence, const VkAllocationCallbacks*pAllocator);
 #define VK_FUNCTION(function) external PFN_##function function;
 	#define VK_FUNCTIONS_PLATFORM \
 		VK_FUNCTION(vkCreateInstance) \
@@ -2605,6 +2599,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkAcquireNextImageKHR) \
 		VK_FUNCTION(vkWaitForFences) \
 		VK_FUNCTION(vkGetFenceStatus) \
+		VK_FUNCTION(vkFlushMappedMemoryRanges) \
 		VK_FUNCTION(vkResetFences) \
 		VK_FUNCTION(vkResetCommandPool) \
 		VK_FUNCTION(vkBeginCommandBuffer) \
@@ -2613,7 +2608,6 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkCmdCopyBufferToImage) \
 		VK_FUNCTION(vkEndCommandBuffer) \
 		VK_FUNCTION(vkQueueSubmit) \
-		VK_FUNCTION(vkFlushMappedMemoryRanges) \
 		VK_FUNCTION(vkCmdBeginRenderPass) \
 		VK_FUNCTION(vkCmdBindPipeline) \
 		VK_FUNCTION(vkCmdBindDescriptorSets) \
@@ -2624,7 +2618,8 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueuePresentKHR)(VkQueue queue, const VkPrese
 		VK_FUNCTION(vkCmdDrawIndexedIndirectCountKHR) \
 		VK_FUNCTION(vkCmdEndRenderPass) \
 		VK_FUNCTION(vkCmdDraw) \
-		VK_FUNCTION(vkQueuePresentKHR) 
+		VK_FUNCTION(vkQueuePresentKHR) \
+		VK_FUNCTION(vkDestroyFence) 
 	VK_FUNCTIONS_DEVICE
 #undef VK_FUNCTION
 
