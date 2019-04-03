@@ -14,11 +14,15 @@
 
 struct Material
 {
-    u32 albedo_texture_index;
-    u32 normal_texture_index;
-    u32 roughness_texture_index;
-    u32 metallic_texture_index;
     v4  base_color_factor;
+    f32 metallic_factor;
+    f32 roughness_factor;
+
+    u32 albedo_texture_id;
+    u32 normal_texture_id;
+    u32 roughness_metallic_occlusion_texture_id;
+
+    u32 reserved[7];
 };
 
 struct Transform
@@ -70,7 +74,7 @@ layout Default_Layout_Fragment
 fragment(Default_Layout_Fragment) void default_fragment_shader()
 {
     Material material = materials[in_instance_data.y];
-    out_color = texture(sampler2D(textures_2d[material.albedo_texture_index], texture_2d_sampler), in_uv0) * material.base_color_factor;
+    out_color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
 }
 
 layout Final_Pass_Layout_Vertex

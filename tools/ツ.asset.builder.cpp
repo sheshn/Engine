@@ -1998,14 +1998,10 @@ internal void gltf_to_tsu_materials(GLTF_File* gltf, TSU_File* tsu)
         tsu_material->asset.id = tsu->current_material_index;
         tsu_material->material.albedo_texture_id = gltf_material->pbr_metallic_roughness.base_color_texture.texture_index + (gltf_material->pbr_metallic_roughness.base_color_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
         tsu_material->material.normal_texture_id = gltf_material->normal_texture.texture_index + (gltf_material->normal_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
-
-        // TODO: Use new Material_Info definition
-        tsu_material->material.metallic_texture_id = gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index + (gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
-        tsu_material->material.roughness_texture_id = gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index + (gltf_material->pbr_metallic_roughness.metallic_roughness_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
-        // tsu_material->material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
+        tsu_material->material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
         tsu_material->material.base_color_factor = gltf_material->pbr_metallic_roughness.base_color_factor;
-        // tsu_material->material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
-        // tsu_material->material.roughness_factor = gltf_material->pbr_metallic_roughness.roughness_factor;
+        tsu_material->material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
+        tsu_material->material.roughness_factor = gltf_material->pbr_metallic_roughness.roughness_factor;
 
         tsu->current_material_index++;
     }

@@ -25,24 +25,16 @@ struct Vertex
 
 struct Material
 {
+    v4  base_color_factor;
+    f32 metallic_factor;
+    f32 roughness_factor;
+
     u32 albedo_texture_id;
     u32 normal_texture_id;
-    u32 roughness_texture_id;
-    u32 metallic_texture_id;
+    u32 roughness_metallic_occlusion_texture_id;
 
-    v4 base_color_factor;
+    u32 reserved[7];
 };
-// TODO: Use this material instead
-// struct Material
-// {
-//     u32 albedo_texture_id;
-//     u32 normal_texture_id;
-//     u32 roughness_metallic_occlusion_texture_id;
-
-//     v4  base_color_factor;
-//     f32 metallic_factor;
-//     f32 roughness_factor;
-// };
 
 struct Transform
 {
