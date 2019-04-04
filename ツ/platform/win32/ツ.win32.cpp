@@ -41,41 +41,6 @@ internal u32 window_width = 800;
 internal u32 window_height = 600;
 internal b32 running = false;
 
-u8* allocate_memory(u64 size)
-{
-    return (u8*)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-}
-
-b32 DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8** data)
-{
-    b32 result = false;
-
-    HANDLE file_handle = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
-    LARGE_INTEGER file_size;
-    if (file_handle != INVALID_HANDLE_VALUE && GetFileSizeEx(file_handle, &file_size))
-    {
-        u32 s = (u32)file_size.QuadPart;
-        u8* file_data = memory_arena_reserve(memory_arena, (u64)s);
-
-        DWORD bytes_read;
-        if (ReadFile(file_handle, file_data, s, &bytes_read, 0) && bytes_read == s)
-        {
-            *data = file_data;
-            *size = (u64)s;
-            result = true;
-        }
-    }
-
-    if (!result)
-    {
-        // TODO: Logging
-        DEBUG_printf("Unable to read file: %s\n", filename);
-    }
-
-    CloseHandle(file_handle);
-    return result;
-}
-
 void DEBUG_printf(char* format, ...)
 {
     char buffer[1024];
@@ -86,6 +51,123 @@ void DEBUG_printf(char* format, ...)
     va_end(vargs);
 
     OutputDebugString(buffer);
+}
+
+u8* allocate_memory(u64 size)
+{
+    return (u8*)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+}
+
+void free_memory(void* memory, u64 size)
+{
+    VirtualFree(memory, 0, MEM_RELEASE);
+}
+
+struct Win32_File_Group
+{
+    Platform_File_Group file_group;
+
+    HANDLE          win32_find_handle;
+    WIN32_FIND_DATA win32_find_data;
+};
+
+struct Win32_File_Handle
+{
+    Platform_File_Handle file_handle;
+
+    HANDLE win32_handle;
+};
+
+Platform_File_Group* open_file_group_with_type(char* file_extension)
+{
+    char wildcard[32] = "*.";
+    for (u32 i = 2; i < sizeof(wildcard) && *file_extension; ++i, ++file_extension)
+    {
+        wildcard[i] = *file_extension;
+    }
+
+    WIN32_FIND_DATA find_data;
+    HANDLE find_handle = FindFirstFileA(wildcard, &find_data);
+
+    // TODO: Use memory arena?
+    Win32_File_Group* file_group = (Win32_File_Group*)allocate_memory(sizeof(Win32_File_Group));
+
+    if (find_handle != INVALID_HANDLE_VALUE)
+    {
+        file_group->file_group.file_count = 0;
+        do
+        {
+            file_group->file_group.file_count++;
+        }
+        while (FindNextFileA(find_handle, &find_data));
+        FindClose(find_handle);
+
+        file_group->win32_find_handle = FindFirstFileA(wildcard, &file_group->win32_find_data);
+    }
+
+    return (Platform_File_Group*)file_group;
+}
+
+void close_file_group(Platform_File_Group* file_group)
+{
+    Win32_File_Group* group = (Win32_File_Group*)file_group;
+    if (group)
+    {
+        if (group->win32_find_handle != INVALID_HANDLE_VALUE)
+        {
+            FindClose(group->win32_find_handle);
+        }
+        free_memory((void*)group);
+    }
+}
+
+#define file_handle_push_error(handle, format, ...) do { DEBUG_printf("win32: file error: "); DEBUG_printf(format, ##__VA_ARGS__); handle->file_handle.has_errors = true; } while(0)
+
+Platform_File_Handle* open_next_file_in_file_group(Platform_File_Group* file_group)
+{
+    Win32_File_Handle* file_handle = NULL;
+    Win32_File_Group* group = (Win32_File_Group*)file_group;
+
+    if (group && group->win32_find_handle != INVALID_HANDLE_VALUE)
+    {
+        // TODO: Use memory arena?
+        file_handle = (Win32_File_Handle*)allocate_memory(sizeof(Win32_File_Handle));
+        file_handle->win32_handle = CreateFileA(group->win32_find_data.cFileName, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+
+        if (file_handle->win32_handle == INVALID_HANDLE_VALUE)
+        {
+            file_handle_push_error(file_handle, "unable to open filename: %s\n", group->win32_find_data.cFileName);
+        }
+
+        if (!FindNextFileA(group->win32_find_handle, &group->win32_find_data))
+        {
+            FindClose(group->win32_find_handle);
+            group->win32_find_handle = INVALID_HANDLE_VALUE;
+        }
+    }
+    return (Platform_File_Handle*)file_handle;
+}
+
+void read_file(Platform_File_Handle* file_handle, u64 offset, u64 size, u8* dest)
+{
+    Win32_File_Handle* file = (Win32_File_Handle*)file_handle;
+    if (!file || file->file_handle.has_errors)
+    {
+        return;
+    }
+
+    // NOTE: Windows only does reads up to 4gb!
+    u32 file_size = (u32)size;
+
+    OVERLAPPED overlapped = {};
+    overlapped.Offset = (u32)((offset >> 0) & 0xFFFFFFFF);
+    overlapped.OffsetHigh = (u32)((offset >> 32) & 0xFFFFFFFF);
+
+    DWORD bytes_read;
+    if (!ReadFile(file->win32_handle, dest, file_size, &bytes_read, &overlapped) || bytes_read != file_size)
+    {
+        file_handle_push_error(file, "unable to read file");
+    }
 }
 
 LRESULT CALLBACK window_callback(HWND window, UINT message, WPARAM w_param, LPARAM l_param)

@@ -2,6 +2,23 @@
 
 #include "ツ.h"
 
-u8* allocate_memory(u64 size);
-b32 DEBUG_read_file(char* filename, Memory_Arena* memory_arena, u64* size, u8** data);
 void DEBUG_printf(char* format, ...);
+
+u8* allocate_memory(u64 size);
+void free_memory(void* memory, u64 size = 0);
+
+struct Platform_File_Group
+{
+    u32 file_count;
+};
+
+struct Platform_File_Handle
+{
+    b32 has_errors;
+};
+
+Platform_File_Group* open_file_group_with_type(char* file_extension);
+void close_file_group(Platform_File_Group* file_group);
+
+Platform_File_Handle* open_next_file_in_file_group(Platform_File_Group* file_group);
+void read_file(Platform_File_Handle* file_handle, u64 offset, u64 size, u8* dest);

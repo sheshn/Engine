@@ -22,9 +22,25 @@ b32 init_asset_system(Memory_Arena* memory_arena)
     assets.memory_arena = memory_arena;
 
     // TODO: Remove this test code!
-    // Replace with actual file API
-    if (!DEBUG_read_file("../data/test.tsu", memory_arena, &assets.asset_file_size, &assets.asset_file_data))
+    Platform_File_Group* asset_file_group = open_file_group_with_type("tsu");
+    if (asset_file_group->file_count > 0)
     {
+        for (u32 i = 0; i < asset_file_group->file_count; ++i)
+        {
+            Platform_File_Handle* asset_file = open_next_file_in_file_group(asset_file_group);
+            assets.asset_file_data = memory_arena_reserve(memory_arena, 88388);
+            read_file(asset_file, 0, 88388, assets.asset_file_data);
+
+            if (asset_file->has_errors)
+            {
+                return false;
+            }
+        }
+        close_file_group(asset_file_group);
+    }
+    else
+    {
+        DEBUG_printf("No asset files (.tsu) found!\n");
         return false;
     }
 
