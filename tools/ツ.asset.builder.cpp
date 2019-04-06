@@ -1689,19 +1689,6 @@ internal b32 parse_gltf(GLTF_File* gltf)
             break;
         }
     }
-
-    // for (u32 i = 0; i < gltf->material_count; ++i)
-    // {
-    //     GLTF_Material material = gltf->materials[i];
-    //     if (material.pbr_metallic_roughness.base_color_texture.texture_index == 0)
-    //     {
-    //         printf("Material %u does not have base_color_texture\n", i);
-    //     }
-    //     if (material.pbr_metallic_roughness.metallic_roughness_texture.texture_index == 0)
-    //     {
-    //         printf("Material %u does not have metallic_roughness_texture\n", i);
-    //     }
-    // }
     return true;
 }
 
@@ -1709,26 +1696,22 @@ struct TSU_File
 {
     TSU_Header header;
 
-    Texture_Info*  textures;
-    u32            current_texture_index;
+    Asset_Info* assets;
+    u64         asset_count;
+    u64         current_asset_index;
 
-    Material_Info* materials;
-    u32            current_material_index;
+    u64 current_texture_base_index;
+    u64 current_material_base_index;
 
-    Mesh_Info*     meshes;
-    u32            current_mesh_index;
+    u8* asset_data;
+    u64 asset_data_size;
+    u64 asset_data_offset;
+    u64 current_asset_data_offset;
 
-    Sub_Mesh_Info* sub_meshes;
-    u32            sub_mesh_count;
-    u32            current_sub_mesh_index;
-
-    u8* texture_data;
-    u64 texture_data_size;
-    u64 current_texture_data_offset;
-
-    u8* mesh_data;
-    u64 mesh_data_size;
-    u64 current_mesh_data_offset;
+    u32 texture_count;
+    u32 material_count;
+    u32 mesh_count;
+    u32 sub_mesh_count;
 };
 
 /*
@@ -1738,45 +1721,38 @@ struct TSU_File
     |-------------------|
     |      version      |
     |-------------------|
-    |   texture_count   |
+    |    asset_count    |
     |-------------------|
-    |   material_count  |
-    |-------------------|
-    |     mesh_count    |
-    |-------------------|
-    |texture_data_offset|
-    |-------------------|
-    | mesh_data_offset  |
-    |-------------------|
-    |   reserved[28]    |
-    |-------------------|
-    |   Texture_Info1   |
-    |   Texture_Info2   |
-    |   Texture_Info3   |
-    |        ...        |
-    |-------------------|
-    |   Material_Info1  |
-    |   Material_Info2  |
-    |   Material_Info3  |
-    |        ...        |
-    |-------------------|
-    |     Mesh_Info1    |
-    |     Mesh_Info2    |
-    |     Mesh_Info3    |
-    |        ...        |
-    |-------------------|
-    |  Sub_Mesh_Info11  |
-    |  Sub_Mesh_Info12  |
-    |  Sub_Mesh_Info21  |
-    |  Sub_Mesh_Info31  |
-    |        ...        |
-    |-------------------|
-    |    Texture_Data   |
-    |-------------------|
-    |     Mesh_Data     |
+    |    reserved[5]    |
+    |-------------------|<---|
+    |   Texture_Info1   |    |
+    |   Texture_Info2   |    |
+    |   Texture_Info3   |    |
+    |        ...        |    |
+    |-------------------|    |
+    |   Material_Info1  |    |
+    |   Material_Info2  |    |
+    |   Material_Info3  |    |
+    |        ...        |    |
+    |-------------------|    |---- Asset Infos
+    |     Mesh_Info1    |    |
+    |-------------------|    |
+    |  Sub_Mesh_Info11  |    |
+    |  Sub_Mesh_Info12  |    |
+    |-------------------|    |
+    |     Mesh_Info2    |    |
+    |-------------------|    |
+    |  Sub_Mesh_Info21  |    |
+    |-------------------|    |
+    |     Mesh_Info3    |    |
+    |-------------------|    |
+    |  Sub_Mesh_Info31  |    |
+    |        ...        |    |
+    |-------------------|<---|
+    |        Data       |
     |-------------------|
 
-     NOTE: texture_count, material_count, and mesh_count are the counts of their respective infos
+     NOTE: Order of Asset Infos will always be textures, materials, mesh then sub_mesh
 */
 
 internal u64 gltf_file_get_total_texture_data_size(GLTF_File* gltf)
@@ -1881,18 +1857,24 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
     {
         GLTF_Mesh* gltf_mesh = gltf->meshes + i;
 
-        Mesh_Info* tsu_mesh = tsu->meshes + tsu->current_mesh_index;
-        tsu_mesh->asset.id = tsu->current_mesh_index;
-        tsu_mesh->data_offset = tsu->current_mesh_data_offset + tsu->header.mesh_data_offset;
-        tsu_mesh->sub_mesh_offset = tsu->current_sub_mesh_index;
-        tsu_mesh->sub_mesh_count = gltf_mesh->primitive_count;
+        Asset_Info* asset = tsu->assets + tsu->current_asset_index;
+        asset->type = ASSET_TYPE_MESH;
+        asset->data_offset = tsu->current_asset_data_offset + tsu->asset_data_offset;
+        tsu->current_asset_index++;
+
+        asset->mesh_info.first_sub_mesh_index = tsu->current_asset_index;
+        asset->mesh_info.sub_mesh_count = gltf_mesh->primitive_count;
 
         u32 index_offset = 0;
         for (u32 j = 0; j < gltf_mesh->primitive_count; ++j)
         {
             GLTF_Primitive* primitive = gltf_mesh->primitives + j;
-            Sub_Mesh_Info* tsu_sub_mesh = tsu->sub_meshes + tsu->current_sub_mesh_index + j;
-            tsu_sub_mesh->material_index = primitive->material_index + (primitive->material_index == 0 ? 0 : tsu->current_material_index - 1);
+
+            Asset_Info* sub_mesh_asset = tsu->assets + tsu->current_asset_index + j;
+            sub_mesh_asset->type = ASSET_TYPE_SUB_MESH;
+            sub_mesh_asset->data_offset = 0;
+            sub_mesh_asset->data_size = 0;
+            sub_mesh_asset->sub_mesh_info.material_index = primitive->material_index + (primitive->material_index == 0 ? 0 : tsu->current_material_base_index);
 
             if (primitive->indices_accessor_index != 0 && primitive->mode == GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST && primitive->attribute_count > 0)
             {
@@ -1928,7 +1910,7 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                                     for (u32 vertex_index = 0; vertex_index < vertex_count; ++vertex_index)
                                     {
                                         u8* element = (u8*)(gltf_buffer_data + stride * vertex_index);
-                                        Vertex* v = (Vertex*)(tsu->mesh_data + tsu->current_mesh_data_offset) + vertex_index;
+                                        Vertex* v = (Vertex*)(tsu->asset_data + tsu->current_asset_data_offset) + vertex_index;
 
                                         if (a.type == GLTF_ATTRIBUTE_TYPE_POSITION)
                                         {
@@ -1944,10 +1926,10 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                         }
                     }
 
-                    tsu_sub_mesh->index_offset = sizeof(Vertex) * vertex_count;
-                    tsu_sub_mesh->index_count = index_buffer_accessor->element_count;
+                    sub_mesh_asset->sub_mesh_info.index_offset = sizeof(Vertex) * vertex_count;
+                    sub_mesh_asset->sub_mesh_info.index_count = index_buffer_accessor->element_count;
 
-                    tsu->current_mesh_data_offset += tsu_sub_mesh->index_offset;
+                    tsu->current_asset_data_offset += sub_mesh_asset->sub_mesh_info.index_offset;
 
                     GLTF_Buffer_View* index_buffer_view = gltf->buffer_views + index_buffer_accessor->buffer_view_index - 1;
                     GLTF_Buffer* index_buffer = gltf->buffers + index_buffer_view->buffer_index;
@@ -1966,7 +1948,7 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                         {
                             u8* element = (gltf_buffer_data + stride * element_index);
                             u32 index = stride == sizeof(u16) ? *(u16*)element : *(u32*)element;
-                            *((u32*)(tsu->mesh_data + tsu->current_mesh_data_offset) + element_index) = index + index_offset;
+                            *((u32*)(tsu->asset_data + tsu->current_asset_data_offset) + element_index) = index + index_offset;
                         }
 
                         index_offset = (u32)index_buffer_accessor->max.data[0] + 1;
@@ -1978,13 +1960,12 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                     // We will then be able to get the correct vertex_offset and index_offset when we issue the draw command.
                     // TODO: Do we actually want to do this?
                     u32 mesh_size = sizeof(Vertex) * vertex_count + sizeof(u32) * index_buffer_accessor->element_count;
-                    tsu_mesh->size = ((mesh_size + sizeof(Vertex) - 1) / sizeof(Vertex)) * sizeof(Vertex);
-                    tsu->current_mesh_data_offset += tsu_mesh->size - tsu_sub_mesh->index_offset;
+                    asset->data_size = ((mesh_size + sizeof(Vertex) - 1) / sizeof(Vertex)) * sizeof(Vertex);
+                    tsu->current_asset_data_offset += asset->data_size - sub_mesh_asset->sub_mesh_info.index_offset;
                 }
             }
-            tsu->current_sub_mesh_index++;
+            tsu->current_asset_index++;
         }
-        tsu->current_mesh_index++;
     }
 }
 
@@ -1994,16 +1975,19 @@ internal void gltf_to_tsu_materials(GLTF_File* gltf, TSU_File* tsu)
     {
         GLTF_Material* gltf_material = gltf->materials + i;
 
-        Material_Info* tsu_material = tsu->materials + tsu->current_material_index;
-        tsu_material->asset.id = tsu->current_material_index;
-        tsu_material->material.albedo_texture_id = gltf_material->pbr_metallic_roughness.base_color_texture.texture_index + (gltf_material->pbr_metallic_roughness.base_color_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
-        tsu_material->material.normal_texture_id = gltf_material->normal_texture.texture_index + (gltf_material->normal_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
-        tsu_material->material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_index - 1);
-        tsu_material->material.base_color_factor = gltf_material->pbr_metallic_roughness.base_color_factor;
-        tsu_material->material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
-        tsu_material->material.roughness_factor = gltf_material->pbr_metallic_roughness.roughness_factor;
+        Asset_Info* asset = tsu->assets + tsu->current_asset_index;
+        asset->type = ASSET_TYPE_MATERIAL;
+        asset->data_offset = 0;
+        asset->data_size = 0;
 
-        tsu->current_material_index++;
+        asset->material_info.material.albedo_texture_id = gltf_material->pbr_metallic_roughness.base_color_texture.texture_index + (gltf_material->pbr_metallic_roughness.base_color_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
+        asset->material_info.material.normal_texture_id = gltf_material->normal_texture.texture_index + (gltf_material->normal_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
+        asset->material_info.material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
+        asset->material_info.material.base_color_factor = gltf_material->pbr_metallic_roughness.base_color_factor;
+        asset->material_info.material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
+        asset->material_info.material.roughness_factor = gltf_material->pbr_metallic_roughness.roughness_factor;
+
+        tsu->current_asset_index++;
     }
 }
 
@@ -2012,8 +1996,10 @@ internal void gltf_to_tsu_textures(GLTF_File* gltf, TSU_File* tsu)
     for (u32 i = 0; i < gltf->texture_count; ++i)
     {
         GLTF_Texture* gltf_texture = gltf->textures + i;
-        Texture_Info* tsu_texture = tsu->textures + tsu->current_texture_index;
-        tsu_texture->asset.id = tsu->current_texture_index;
+
+        Asset_Info* asset = tsu->assets + tsu->current_asset_index;
+        asset->type = ASSET_TYPE_TEXTURE;
+        asset->data_offset = tsu->current_asset_data_offset + tsu->asset_data_offset;
 
         // NOTE: If the texture source is not DDS we will still keep the texture info at the index
         // TODO: Remove texture infos that we don't use?
@@ -2034,19 +2020,20 @@ internal void gltf_to_tsu_textures(GLTF_File* gltf, TSU_File* tsu)
                 }
                 else
                 {
-                    tsu_texture->data_offset = tsu->current_texture_data_offset + tsu->header.texture_data_offset;
-                    tsu_texture->width = dds.levels[0].width;
-                    tsu_texture->height = dds.levels[0].height;
-                    tsu_texture->mipmap_count = dds.mipmap_count;
-                    tsu_texture->size = dds.size;
+                    asset->data_size = dds.size;
+                    asset->texture_info.width = dds.levels[0].width;
+                    asset->texture_info.height = dds.levels[0].height;
+                    asset->texture_info.mipmap_count = dds.mipmap_count;
 
-                    copy_memory(tsu->texture_data + tsu->current_texture_data_offset, dds.levels[0].data, dds.size);
-                    tsu->current_texture_data_offset += dds.size;
+                    copy_memory(tsu->asset_data + tsu->current_asset_data_offset, dds.levels[0].data, dds.size);
+                    tsu->current_asset_data_offset += dds.size;
                 }
             }
         }
-        tsu->current_texture_index++;
+        tsu->current_asset_index++;
     }
+
+    tsu->current_material_base_index = tsu->current_asset_index;
 }
 
 internal TSU_File create_tsu_file(GLTF_File* gltf_files, u32 gltf_file_count)
@@ -2060,59 +2047,33 @@ internal TSU_File create_tsu_file(GLTF_File* gltf_files, u32 gltf_file_count)
         GLTF_File* gltf = gltf_files + i;
         assert(gltf->texture_count == gltf->image_count);
 
-        tsu_file.header.texture_count += gltf->texture_count;
-        tsu_file.header.material_count += gltf->material_count;
-        tsu_file.header.mesh_count += gltf->mesh_count;
+        tsu_file.texture_count += gltf->texture_count;
+        tsu_file.material_count += gltf->material_count;
+        tsu_file.mesh_count += gltf->mesh_count;
 
         for (u32 j = 0; j < gltf->mesh_count; ++j)
         {
             tsu_file.sub_mesh_count += gltf->meshes[j].primitive_count;
         }
 
-        tsu_file.texture_data_size += gltf_file_get_total_texture_data_size(gltf);
-        tsu_file.mesh_data_size += gltf_file_get_total_mesh_data_size(gltf);
+        tsu_file.asset_data_size += gltf_file_get_total_texture_data_size(gltf) + gltf_file_get_total_mesh_data_size(gltf);
+        tsu_file.header.asset_count += tsu_file.texture_count + tsu_file.material_count + tsu_file.mesh_count + tsu_file.sub_mesh_count;
     }
 
-    tsu_file.texture_data = (u8*)malloc(tsu_file.texture_data_size);
-    tsu_file.mesh_data = (u8*)malloc(tsu_file.mesh_data_size);
-
-    // NOTE: Index 0 will be the 'null' version of the asset
-    tsu_file.header.texture_count++;
-    tsu_file.header.material_count++;
-    tsu_file.header.mesh_count++;
-
-    tsu_file.current_texture_index = 1;
-    tsu_file.current_material_index = 1;
-    tsu_file.current_mesh_index = 1;
-
-    tsu_file.header.texture_data_offset = sizeof(TSU_Header) + sizeof(Texture_Info) * tsu_file.header.texture_count + sizeof(Material_Info) * tsu_file.header.material_count + sizeof(Mesh_Info) * tsu_file.header.mesh_count + sizeof(Sub_Mesh_Info) * tsu_file.sub_mesh_count;
-    tsu_file.current_texture_data_offset = 0;
-
-    tsu_file.header.mesh_data_offset = tsu_file.header.texture_data_offset + tsu_file.texture_data_size;
-    tsu_file.current_mesh_data_offset = 0;
-
-    tsu_file.textures = (Texture_Info*)malloc(sizeof(Texture_Info) * tsu_file.header.texture_count);
-    tsu_file.materials = (Material_Info*)malloc(sizeof(Material_Info) * tsu_file.header.material_count);
-    tsu_file.meshes = (Mesh_Info*)malloc(sizeof(Mesh_Info) * tsu_file.header.mesh_count);
-    tsu_file.sub_meshes = (Sub_Mesh_Info*)malloc(sizeof(Sub_Mesh_Info) * tsu_file.sub_mesh_count);
-    tsu_file.current_sub_mesh_index = 0;
-
-    // NOTE: We still need to initalize the 'null' assets in the engine
-    *tsu_file.textures = {};
-    *tsu_file.materials = {};
-    *tsu_file.meshes = {};
+    tsu_file.assets = (Asset_Info*)malloc(sizeof(Asset_Info) * tsu_file.header.asset_count);
+    tsu_file.asset_data = (u8*)malloc(tsu_file.asset_data_size);
+    tsu_file.asset_data_offset = sizeof(TSU_Header) + sizeof(Asset_Info) * tsu_file.header.asset_count;
 
     for (u32 i = 0; i < gltf_file_count; ++i)
     {
         GLTF_File* gltf = gltf_files + i;
 
-        gltf_to_tsu_meshes(gltf, &tsu_file);
-        gltf_to_tsu_materials(gltf, &tsu_file);
         gltf_to_tsu_textures(gltf, &tsu_file);
-    }
-    assert(tsu_file.current_texture_data_offset == tsu_file.texture_data_size);
-    assert(tsu_file.current_mesh_data_offset == tsu_file.mesh_data_size);
+        gltf_to_tsu_materials(gltf, &tsu_file);
+        gltf_to_tsu_meshes(gltf, &tsu_file);
 
+        tsu_file.current_texture_base_index = tsu_file.current_asset_index;
+    }
     return tsu_file;
 }
 
@@ -2125,12 +2086,8 @@ internal b32 write_tsu_file(TSU_File* tsu_file, char* filename)
     }
 
     fwrite(&tsu_file->header, sizeof(TSU_Header), 1, file);
-    fwrite(tsu_file->textures, sizeof(Texture_Info) * tsu_file->header.texture_count, 1, file);
-    fwrite(tsu_file->materials, sizeof(Material_Info) * tsu_file->header.material_count, 1, file);
-    fwrite(tsu_file->meshes, sizeof(Mesh_Info) * tsu_file->header.mesh_count, 1, file);
-    fwrite(tsu_file->sub_meshes, sizeof(Sub_Mesh_Info) * tsu_file->sub_mesh_count, 1, file);
-    fwrite(tsu_file->texture_data, tsu_file->texture_data_size, 1, file);
-    fwrite(tsu_file->mesh_data, tsu_file->mesh_data_size, 1, file);
+    fwrite(tsu_file->assets, sizeof(Asset_Info) * tsu_file->header.asset_count, 1, file);
+    fwrite(tsu_file->asset_data, tsu_file->asset_data_size, 1, file);
     fclose(file);
     return true;
 };

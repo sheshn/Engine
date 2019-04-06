@@ -121,6 +121,19 @@ void close_file_group(Platform_File_Group* file_group)
     }
 }
 
+void close_file_handle(Platform_File_Handle* file_handle)
+{
+    Win32_File_Handle* handle = (Win32_File_Handle*)file_handle;
+    if (handle)
+    {
+        if (handle->win32_handle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(handle->win32_handle);
+        }
+        free_memory((void*)handle);
+    }
+}
+
 #define file_handle_push_error(handle, format, ...) do { DEBUG_printf("win32: file error: "); DEBUG_printf(format, ##__VA_ARGS__); handle->file_handle.has_errors = true; } while(0)
 
 Platform_File_Handle* open_next_file_in_file_group(Platform_File_Group* file_group)
@@ -166,7 +179,7 @@ void read_file(Platform_File_Handle* file_handle, u64 offset, u64 size, u8* dest
     DWORD bytes_read;
     if (!ReadFile(file->win32_handle, dest, file_size, &bytes_read, &overlapped) || bytes_read != file_size)
     {
-        file_handle_push_error(file, "unable to read file");
+        file_handle_push_error(file, "unable to read file\n");
     }
 }
 

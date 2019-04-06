@@ -3,25 +3,22 @@
 internal u32 TSU_MAGIC = 0xE383842E; // ツ.
 internal u32 TSU_VERSION = 1;
 
+enum Asset_Type
+{
+    ASSET_TYPE_TEXTURE,
+    ASSET_TYPE_MATERIAL,
+    ASSET_TYPE_MESH,
+    ASSET_TYPE_SUB_MESH
+};
+
 #pragma pack(push, 1)
 struct TSU_Header
 {
     u32 magic;
     u32 version;
+    u32 asset_count;
 
-    u32 texture_count;
-    u32 material_count;
-    u32 mesh_count;
-
-    u64 texture_data_offset;
-    u64 mesh_data_offset;
-
-    u8 reserved[28];
-};
-
-struct Asset
-{
-    u64 id;
+    u32 reserved[5];
 };
 
 struct Sub_Mesh_Info
@@ -33,20 +30,12 @@ struct Sub_Mesh_Info
 
 struct Mesh_Info
 {
-    Asset asset;
-
-    u64 data_offset;
-    u32 size;
-    u32 sub_mesh_offset;
+    u32 first_sub_mesh_index;
     u32 sub_mesh_count;
 };
 
 struct Texture_Info
 {
-    Asset asset;
-
-    u64 data_offset;
-    u32 size;
     u32 width;
     u32 height;
     u32 mipmap_count;
@@ -54,9 +43,22 @@ struct Texture_Info
 
 struct Material_Info
 {
-    Asset asset;
-
     Material material;
+};
+
+struct Asset_Info
+{
+    Asset_Type type;
+    u64        data_offset;
+    u32        data_size;
+
+    union
+    {
+        Texture_Info  texture_info;
+        Material_Info material_info;
+        Mesh_Info     mesh_info;
+        Sub_Mesh_Info sub_mesh_info;
+    };
 };
 #pragma pack(pop)
 
