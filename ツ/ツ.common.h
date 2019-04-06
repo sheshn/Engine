@@ -8,6 +8,8 @@
     #define assert(condition)
 #endif
 
+#define invalid_code_path() assert(!"Invalid code path!")
+
 #define array_count(array) (sizeof((array))/sizeof((array)[0]))
 
 #define kilobytes(value) ((value) * 1024)

@@ -53,9 +53,9 @@ void DEBUG_printf(char* format, ...)
     OutputDebugString(buffer);
 }
 
-u8* allocate_memory(u64 size)
+void* allocate_memory(u64 size)
 {
-    return (u8*)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    return VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
 void free_memory(void* memory, u64 size)
@@ -161,7 +161,7 @@ Platform_File_Handle* open_next_file_in_file_group(Platform_File_Group* file_gro
     return (Platform_File_Handle*)file_handle;
 }
 
-void read_file(Platform_File_Handle* file_handle, u64 offset, u64 size, u8* dest)
+void read_data_from_file(Platform_File_Handle* file_handle, u64 offset, u64 size, void* dest)
 {
     Win32_File_Handle* file = (Win32_File_Handle*)file_handle;
     if (!file || file->file_handle.has_errors)
@@ -356,7 +356,7 @@ JOB_ENTRY_POINT(gpu_entry_point)
 void __stdcall WinMainCRTStartup()
 {
     u64 memory_size = gigabytes(1);
-    u8* platform_memory = allocate_memory(memory_size);
+    u8* platform_memory = (u8*)allocate_memory(memory_size);
 
     Memory_Arena platform_arena = {platform_memory, memory_size};
 

@@ -4,8 +4,8 @@
 
 void DEBUG_printf(char* format, ...);
 
-u8* allocate_memory(u64 size);
-void free_memory(void* memory, u64 size = 0);
+void* allocate_memory(u64 size);
+void  free_memory(void* memory, u64 size = 0);
 
 struct Platform_File_Group
 {
@@ -22,4 +22,4 @@ void close_file_group(Platform_File_Group* file_group);
 
 Platform_File_Handle* open_next_file_in_file_group(Platform_File_Group* file_group);
 void close_file_handle(Platform_File_Handle* file_handle);
-void read_file(Platform_File_Handle* file_handle, u64 offset, u64 size, u8* dest);
+void read_data_from_file(Platform_File_Handle* file_handle, u64 offset, u64 size, void* dest);

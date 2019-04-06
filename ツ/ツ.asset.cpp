@@ -28,14 +28,8 @@ struct Assets
     Asset_File* files;
     u32         file_count;
 
-    // TODO: Remove this with file streaming
-    TSU_Header tsu_header;
-    u8* asset_file_data;
-    u64 asset_file_size;
-
-    // TODO: Replace with Asset*
-    Asset_Info* assets;
-    u64         asset_count;
+    Asset* assets;
+    u64    asset_count;
 };
 
 internal Assets assets;
@@ -44,7 +38,6 @@ b32 init_asset_system(Memory_Arena* memory_arena)
 {
     assets = {memory_arena};
 
-    // TODO: Remove this test code!
     Platform_File_Group* asset_file_group = open_file_group_with_type("tsu");
     if (asset_file_group->file_count > 0)
     {
@@ -53,20 +46,9 @@ b32 init_asset_system(Memory_Arena* memory_arena)
 
         for (u32 i = 0; i < asset_file_group->file_count; ++i)
         {
-        #if 1
-            Platform_File_Handle* asset_file_handle = open_next_file_in_file_group(asset_file_group);
-            {
-                assets.asset_file_data = memory_arena_reserve(memory_arena, 88400);
-                read_file(asset_file_handle, 0, 88400, assets.asset_file_data);
-                if (asset_file_handle->has_errors)
-                {
-                    return false;
-                }
-            }
-        #else
             u32 index = assets.file_count;
             assets.files[index].handle = open_next_file_in_file_group(asset_file_group);
-            read_file(assets.files[index].handle, 0, sizeof(TSU_Header), (u8*)&assets.files[index].tsu_header);
+            read_data_from_file(assets.files[index].handle, 0, sizeof(TSU_Header), &assets.files[index].tsu_header);
 
             if (assets.files[index].handle->has_errors || assets.files[index].tsu_header.magic != TSU_MAGIC || assets.files[index].tsu_header.version != TSU_VERSION)
             {
@@ -77,7 +59,6 @@ b32 init_asset_system(Memory_Arena* memory_arena)
 
             assets.asset_count += assets.files[index].tsu_header.asset_count;
             assets.file_count++;
-        #endif
         }
         close_file_group(asset_file_group);
     }
@@ -87,45 +68,75 @@ b32 init_asset_system(Memory_Arena* memory_arena)
         return false;
     }
 
-    //assets.assets = (Asset_Info*)memory_arena_reserve(memory_arena, sizeof(Asset_Info) * assets.asset_count);
+    // NOTE: Adding the 'null' asset here so we don't have to subtract one from the indices that each asset refers to
+    assets.asset_count++;
+    assets.assets = (Asset*)memory_arena_reserve(memory_arena, sizeof(Asset) * assets.asset_count);
 
     // TODO: Create 'null' assets
-    u32 current_asset_count = 0;
-    for (u32 i = 0; i < assets.file_count; ++i)
+
+    u32 current_asset_base_index = 0;
+    for (u32 index = 0; index < assets.file_count; ++index)
     {
-        // TODO: Rebase asset indices
+        for (u32 i = 0; i < assets.files[index].tsu_header.asset_count; ++i)
+        {
+            Asset* asset = assets.assets + i + current_asset_base_index + 1;
+            asset->state = ASSET_STATE_UNLOADED;
+            asset->file_index = index;
+
+            read_data_from_file(assets.files[index].handle, sizeof(TSU_Header) + i * sizeof(Asset_Info), sizeof(Asset_Info), &asset->info);
+
+            // NOTE: The asset indices that each asset can refer to already take the 'null' asset into consideration
+            switch (asset->info.type)
+            {
+            case ASSET_TYPE_MATERIAL:
+            {
+                Material_Info* material_info = &asset->info.material_info;
+                material_info->material.albedo_texture_id = material_info->material.albedo_texture_id + (material_info->material.albedo_texture_id == 0 ? 0 : current_asset_base_index);
+                material_info->material.normal_texture_id = material_info->material.normal_texture_id + (material_info->material.normal_texture_id == 0 ? 0 : current_asset_base_index);
+                material_info->material.roughness_metallic_occlusion_texture_id = material_info->material.roughness_metallic_occlusion_texture_id + (material_info->material.roughness_metallic_occlusion_texture_id == 0 ? 0 : current_asset_base_index);
+            } break;
+
+            case ASSET_TYPE_MESH:
+            {
+                Mesh_Info* mesh_info = &asset->info.mesh_info;
+                mesh_info->first_sub_mesh_index = mesh_info->first_sub_mesh_index + (mesh_info->first_sub_mesh_index == 0 ? 0 : current_asset_base_index);
+                assert(mesh_info->first_sub_mesh_index != 0);
+            } break;
+
+            case ASSET_TYPE_SUB_MESH:
+            {
+                Sub_Mesh_Info* sub_mesh_info = &asset->info.sub_mesh_info;
+                sub_mesh_info->material_index = sub_mesh_info->material_index + (sub_mesh_info->material_index == 0 ? 0 : current_asset_base_index);
+            } break;
+
+            default:
+                break;
+            }
+        }
+        current_asset_base_index += assets.files[index].tsu_header.asset_count;
     }
 
-#if 1
-    assets.tsu_header = *(TSU_Header*)assets.asset_file_data;
-    if (assets.tsu_header.magic != TSU_MAGIC || assets.tsu_header.version != TSU_VERSION)
-    {
-        DEBUG_printf("Asset file is not a correct .tsu file (magic: %u, version: %u)!\n", assets.tsu_header.magic, assets.tsu_header.version);
-        return false;
-    }
-
-    assets.assets = (Asset_Info*)(assets.asset_file_data + sizeof(TSU_Header));
-
-    Asset_Info mesh = assets.assets[2];
-    Asset_Info sub_mesh = assets.assets[mesh.mesh_info.first_sub_mesh_index];
-    Asset_Info material = assets.assets[sub_mesh.sub_mesh_info.material_index == 0 ? 0 : sub_mesh.sub_mesh_info.material_index - 1];
-    Asset_Info texture = assets.assets[material.material_info.material.albedo_texture_id == 0 ? 0 : material.material_info.material.albedo_texture_id - 1];
+    // TODO: Remove this test code!
+    Asset* mesh = &assets.assets[3];
+    Asset* sub_mesh = &assets.assets[mesh->info.mesh_info.first_sub_mesh_index];
+    Asset* material = &assets.assets[sub_mesh->info.sub_mesh_info.material_index];
+    Asset* texture = &assets.assets[material->info.material_info.material.albedo_texture_id];
 
     Renderer_Buffer renderer_buffer = renderer_create_buffer_reference(1);
-    Renderer_Transfer_Operation* op  = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER, mesh.data_size);
+    Renderer_Transfer_Operation* op = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_MESH_BUFFER, mesh->info.data_size);
     if (op)
     {
         op->buffer = renderer_buffer;
-        copy_memory(op->memory, assets.asset_file_data + mesh.data_offset, mesh.data_size);
+        read_data_from_file(assets.files[mesh->file_index].handle, mesh->info.data_offset, mesh->info.data_size, op->memory);
         renderer_queue_transfer(op);
     }
 
-    Renderer_Texture renderer_texture = renderer_create_texture_reference(1, texture.texture_info.width, texture.texture_info.height);
-    op = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, texture.data_size);
+    Renderer_Texture renderer_texture = renderer_create_texture_reference(1, texture->info.texture_info.width, texture->info.texture_info.height);
+    op = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, texture->info.data_size);
     if (op)
     {
         op->texture = renderer_texture;
-        copy_memory(op->memory, assets.asset_file_data + texture.data_offset, texture.data_size);
+        read_data_from_file(assets.files[texture->file_index].handle, texture->info.data_offset, texture->info.data_size, op->memory);
         renderer_queue_transfer(op);
     }
 
@@ -135,11 +146,10 @@ b32 init_asset_system(Memory_Arena* memory_arena)
     {
         op->material = material_buffer;
         Material* mem = (Material*)op->memory;
-        *mem = material.material_info.material;
+        *mem = material->info.material_info.material;
         mem->albedo_texture_id = renderer_texture.id;
         renderer_queue_transfer(op);
     }
-#endif
 
     return true;
 }

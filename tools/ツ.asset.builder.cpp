@@ -1862,7 +1862,8 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
         asset->data_offset = tsu->current_asset_data_offset + tsu->asset_data_offset;
         tsu->current_asset_index++;
 
-        asset->mesh_info.first_sub_mesh_index = tsu->current_asset_index;
+        // NOTE: The mesh's first sub mesh index will also take the 'null' asset into consideration even though it doesn't need to since a sub-mesh will always be after a mesh asset
+        asset->mesh_info.first_sub_mesh_index = tsu->current_asset_index + 1;
         asset->mesh_info.sub_mesh_count = gltf_mesh->primitive_count;
 
         u32 index_offset = 0;
@@ -2064,6 +2065,7 @@ internal TSU_File create_tsu_file(GLTF_File* gltf_files, u32 gltf_file_count)
     tsu_file.asset_data = (u8*)malloc(tsu_file.asset_data_size);
     tsu_file.asset_data_offset = sizeof(TSU_Header) + sizeof(Asset_Info) * tsu_file.header.asset_count;
 
+    // NOTE: The asset indices that each asset can refer to already take the 'null' asset into consideration
     for (u32 i = 0; i < gltf_file_count; ++i)
     {
         GLTF_File* gltf = gltf_files + i;

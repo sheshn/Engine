@@ -1427,6 +1427,10 @@ internal void resolve_pending_transfer_operations()
                     last_material_index = S32_MIN;
                     last_xform_index = S32_MIN;
                 } break;
+
+                default:
+                    invalid_code_path();
+                    break;
                 }
 
                 operation->state = RENDERER_TRANSFER_OPERATION_STATE_QUEUED;
