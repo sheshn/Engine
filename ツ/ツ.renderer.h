@@ -67,6 +67,7 @@ struct Renderer_Transfer_Operation
     Renderer_Transfer_Operation_State state;
     Renderer_Transfer_Operation_Type  type;
 
+    Job_Counter* counter;
     union
     {
         Renderer_Buffer    buffer;
@@ -101,7 +102,7 @@ Renderer_Transform renderer_create_transform_reference(u32 id);
 
 Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operation_Type type);
 Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operation_Type type, u64 transfer_size);
-void renderer_queue_transfer(Renderer_Transfer_Operation* operation);
+void renderer_queue_transfer(Renderer_Transfer_Operation* operation, Job_Counter* counter = NULL);
 
 void renderer_begin_frame(Frame_Parameters* frame_params);
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Material material, Renderer_Transform xform);

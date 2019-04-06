@@ -495,7 +495,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkDescriptorSetLayoutBinding storage_transform_layout_binding = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT};
 
     VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding};
-    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT, 0, 0};
+    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT, 0, 0};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
     layout_binding_flags_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
@@ -1201,6 +1201,7 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operati
         operation->size = size;
         operation->state = RENDERER_TRANSFER_OPERATION_STATE_UNLOADED;
         operation->type = type;
+        operation->counter = NULL;
 
         renderer.transfer_queue.enqueue_location = (renderer.transfer_queue.enqueue_location + transfer_size + aligned_offset) % renderer.transfer_queue.transfer_memory_size;
         atomic_add((s64*)&renderer.transfer_queue.transfer_memory_used, size + aligned_offset);
@@ -1211,9 +1212,14 @@ Renderer_Transfer_Operation* renderer_request_transfer(Renderer_Transfer_Operati
     return operation;
 }
 
-void renderer_queue_transfer(Renderer_Transfer_Operation* operation)
+void renderer_queue_transfer(Renderer_Transfer_Operation* operation, Job_Counter* counter)
 {
     operation->state = RENDERER_TRANSFER_OPERATION_STATE_READY;
+    if (counter)
+    {
+        atomic_increment(counter);
+        operation->counter = counter;
+    }
 }
 
 internal void resolve_pending_transfer_operations()
@@ -1253,13 +1259,17 @@ internal void resolve_pending_transfer_operations()
         VkMappedMemoryRange transfer_memory_ranges[] = {transfer_memory_range, transfer_memory_range};
         u32 transfer_memory_range_count = 1;
 
-        for (u64 i = starting_index; i < transfer_operations; ++i)
+        for (u64 i = 0; i < transfer_operations; ++i)
         {
-            Renderer_Transfer_Operation* operation = &renderer.transfer_queue.operations[i % array_count(renderer.transfer_queue.operations)];
+            Renderer_Transfer_Operation* operation = &renderer.transfer_queue.operations[(starting_index + i) % array_count(renderer.transfer_queue.operations)];
             if (operation->state == RENDERER_TRANSFER_OPERATION_STATE_QUEUED)
             {
                 operation->state = RENDERER_TRANSFER_OPERATION_STATE_FINISHED;
                 atomic_decrement(&renderer.transfer_queue.operation_count);
+                if (operation->counter)
+                {
+                    atomic_decrement(operation->counter);
+                }
             }
             else if (operation->state != RENDERER_TRANSFER_OPERATION_STATE_READY)
             {

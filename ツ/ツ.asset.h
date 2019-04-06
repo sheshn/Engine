@@ -63,3 +63,5 @@ struct Asset_Info
 #pragma pack(pop)
 
 b32 init_asset_system(Memory_Arena* memory_arena);
+
+void draw_mesh(u64 id);
