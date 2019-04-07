@@ -1993,7 +1993,7 @@ internal void gltf_to_tsu_materials(GLTF_File* gltf, TSU_File* tsu)
 
         asset->material_info.material.albedo_texture_id = gltf_material->pbr_metallic_roughness.base_color_texture.texture_index + (gltf_material->pbr_metallic_roughness.base_color_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
         asset->material_info.material.normal_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.normal_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.normal_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
-        asset->material_info.material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
+        asset->material_info.material.occlusion_roughness_metallic_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
         asset->material_info.material.base_color_factor = gltf_material->pbr_metallic_roughness.base_color_factor;
         asset->material_info.material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
         asset->material_info.material.roughness_factor = gltf_material->pbr_metallic_roughness.roughness_factor;

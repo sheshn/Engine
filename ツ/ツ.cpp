@@ -10,7 +10,7 @@ void game_init(Game_State* game_state)
     {
         op->transform = xform_buffer;
         m4x4* mem = (m4x4*)op->memory;
-        *mem = identity();
+        *mem = quat_to_m4x4(axis_angle({0, 1, 0}, radians(180.0f)) * axis_angle({1, 0, 0}, radians(90.0f)));
         renderer_queue_transfer(op);
     }
 

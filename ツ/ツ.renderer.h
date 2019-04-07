@@ -6,6 +6,14 @@ struct Renderer_Buffer
     u32 reserved;
 };
 
+// NOTE: These formats correspond to their respective Vulkan formats
+enum Renderer_Texture_Format
+{
+    RENDERER_TEXTURE_FORMAT_BC5      = 141,
+    RENDERER_TEXTURE_FORMAT_BC7      = 145,
+    RENDERER_TEXTURE_FORMAT_BC7_SRGB = 146
+};
+
 struct Renderer_Texture
 {
     u16 id;
@@ -32,7 +40,7 @@ struct Material
 
     u32 albedo_texture_id;
     u32 normal_texture_id;
-    u32 roughness_metallic_occlusion_texture_id;
+    u32 occlusion_roughness_metallic_texture_id;
 
     u32 reserved[7];
 };
@@ -97,7 +105,7 @@ struct Renderer_Transfer_Queue
 
 // TODO: Consider removing 'renderer' prefix from all of these
 Renderer_Buffer    renderer_create_buffer_reference(u32 id);
-Renderer_Texture   renderer_create_texture_reference(u32 id, u32 width, u32 height, u32 mipmap_count, u32 format);
+Renderer_Texture   renderer_create_texture_reference(u32 id, u32 width, u32 height, u32 mipmap_count, Renderer_Texture_Format format);
 Renderer_Material  renderer_create_material_reference(u32 id);
 Renderer_Transform renderer_create_transform_reference(u32 id);
 

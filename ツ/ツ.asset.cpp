@@ -81,12 +81,42 @@ b32 init_asset_system(Memory_Arena* memory_arena)
         return false;
     }
 
-    // NOTE: Adding the 'null' asset here so we don't have to subtract one from the indices that each asset refers to
+    // NOTE: Adding the 'null' asset here so we don't have to subtract one from the indices that each asset refers to.
+    // The asset info for asset 0 will be incorrect since it can be referred to by every asset type.
+    // The renderer handle for asset 0 just needs to have an id of 0.
     assets.asset_count++;
     assets.assets = (Asset*)memory_arena_reserve(memory_arena, sizeof(Asset) * assets.asset_count);
-
-    // TODO: Set asset 0 to be a 1x1 white texture? Other asset types won't care since they only use the id field
     assets.assets[0] = {ASSET_STATE_LOADED};
+
+    {
+        // NOTE: This is a 4x4 white texture with format BC7_SRGB_BLOCK
+        u8 null_texture[] = {0x10,0xFF,0xFF,0xFF,0xFF,0xFF,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+
+        Renderer_Transfer_Operation* transfer_operation = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, sizeof(null_texture));
+        assert(transfer_operation);
+
+        transfer_operation->texture = renderer_create_texture_reference(0, 4, 4, 1, RENDERER_TEXTURE_FORMAT_BC7_SRGB);
+
+        copy_memory(transfer_operation->memory, null_texture, sizeof(null_texture));
+        renderer_queue_transfer(transfer_operation);
+    }
+
+    {
+        Renderer_Transfer_Operation* transfer_operation = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_MATERIAL);
+        assert(transfer_operation);
+
+        transfer_operation->material = renderer_create_material_reference(0);
+
+        Material* null_material = (Material*)transfer_operation->memory;
+        null_material->base_color_factor = {1, 1, 1, 1};
+        null_material->metallic_factor = 1;
+        null_material->roughness_factor = 1;
+        null_material->albedo_texture_id = 0;
+        null_material->normal_texture_id = 0;
+        null_material->occlusion_roughness_metallic_texture_id = 0;
+        renderer_queue_transfer(transfer_operation);
+    }
+
     assets.current_renderer_texture_id++;
     assets.current_renderer_material_id++;
     assets.current_renderer_buffer_id++;
@@ -112,7 +142,7 @@ b32 init_asset_system(Memory_Arena* memory_arena)
                 Material_Info* material_info = &asset->info.material_info;
                 material_info->material.albedo_texture_id = material_info->material.albedo_texture_id + (material_info->material.albedo_texture_id == 0 ? 0 : current_asset_base_index);
                 material_info->material.normal_texture_id = material_info->material.normal_texture_id + (material_info->material.normal_texture_id == 0 ? 0 : current_asset_base_index);
-                material_info->material.roughness_metallic_occlusion_texture_id = material_info->material.roughness_metallic_occlusion_texture_id + (material_info->material.roughness_metallic_occlusion_texture_id == 0 ? 0 : current_asset_base_index);
+                material_info->material.occlusion_roughness_metallic_texture_id = material_info->material.occlusion_roughness_metallic_texture_id + (material_info->material.occlusion_roughness_metallic_texture_id == 0 ? 0 : current_asset_base_index);
             } break;
 
             case ASSET_TYPE_MESH:
@@ -141,7 +171,7 @@ b32 init_asset_system(Memory_Arena* memory_arena)
 }
 
 // TODO: Manage renderer handles properly
-internal Renderer_Texture get_next_renderer_texture_reference(u32 texture_width, u32 texture_height, u32 mipmap_count, u32 format)
+internal Renderer_Texture get_next_renderer_texture_reference(u32 texture_width, u32 texture_height, u32 mipmap_count, Renderer_Texture_Format format)
 {
     return renderer_create_texture_reference(assets.current_renderer_texture_id++, texture_width, texture_height, mipmap_count, format);
 }
@@ -175,7 +205,7 @@ internal void load_texture(Asset* asset)
     asset->transfer_operation = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, asset->info.data_size);
     if (asset->transfer_operation)
     {
-        asset->renderer_texture = get_next_renderer_texture_reference(asset->info.texture_info.width, asset->info.texture_info.height, asset->info.texture_info.mipmap_count, asset->info.texture_info.format);
+        asset->renderer_texture = get_next_renderer_texture_reference(asset->info.texture_info.width, asset->info.texture_info.height, asset->info.texture_info.mipmap_count, (Renderer_Texture_Format)asset->info.texture_info.format);
         asset->transfer_operation->texture = asset->renderer_texture;
 
         Job load_asset_job = {load_asset_entry_point, asset};
@@ -188,7 +218,7 @@ internal void load_material(Asset* asset)
 {
     Asset* albedo_texture = get_asset(asset->info.material_info.material.albedo_texture_id);
     Asset* normal_texture = get_asset(asset->info.material_info.material.normal_texture_id);
-    Asset* roughness_metallic_occlusion_texture = get_asset(asset->info.material_info.material.roughness_metallic_occlusion_texture_id);
+    Asset* occlusion_roughness_metallic_texture = get_asset(asset->info.material_info.material.occlusion_roughness_metallic_texture_id);
 
     if (!albedo_texture)
     {
@@ -200,15 +230,15 @@ internal void load_material(Asset* asset)
         normal_texture = assets.assets + asset->info.material_info.material.normal_texture_id;
         assert(normal_texture->info.type == ASSET_TYPE_TEXTURE);
     }
-    if (!roughness_metallic_occlusion_texture)
+    if (!occlusion_roughness_metallic_texture)
     {
-        roughness_metallic_occlusion_texture = assets.assets + asset->info.material_info.material.roughness_metallic_occlusion_texture_id;
-        assert(roughness_metallic_occlusion_texture->info.type == ASSET_TYPE_TEXTURE);
+        occlusion_roughness_metallic_texture = assets.assets + asset->info.material_info.material.occlusion_roughness_metallic_texture_id;
+        assert(occlusion_roughness_metallic_texture->info.type == ASSET_TYPE_TEXTURE);
     }
 
     if ((albedo_texture->state == ASSET_STATE_QUEUED || albedo_texture->state == ASSET_STATE_LOADED) &&
         (normal_texture->state == ASSET_STATE_QUEUED || normal_texture->state == ASSET_STATE_LOADED) &&
-        (roughness_metallic_occlusion_texture->state == ASSET_STATE_QUEUED || roughness_metallic_occlusion_texture->state == ASSET_STATE_LOADED))
+        (occlusion_roughness_metallic_texture->state == ASSET_STATE_QUEUED || occlusion_roughness_metallic_texture->state == ASSET_STATE_LOADED))
     {
         assert(!asset->transfer_operation);
 
@@ -222,7 +252,7 @@ internal void load_material(Asset* asset)
             *material = asset->info.material_info.material;
             material->albedo_texture_id = albedo_texture->renderer_texture.id;
             material->normal_texture_id = normal_texture->renderer_texture.id;
-            material->roughness_metallic_occlusion_texture_id = roughness_metallic_occlusion_texture->renderer_texture.id;
+            material->occlusion_roughness_metallic_texture_id = occlusion_roughness_metallic_texture->renderer_texture.id;
 
             renderer_queue_transfer(asset->transfer_operation, &asset->loaded_counter);
 
@@ -300,8 +330,8 @@ internal void resolve_asset_load_operation(Asset* asset)
     {
         Asset* albedo_texture = get_asset(asset->info.material_info.material.albedo_texture_id);
         Asset* normal_texture = get_asset(asset->info.material_info.material.normal_texture_id);
-        Asset* roughness_metallic_occlusion_texture = get_asset(asset->info.material_info.material.roughness_metallic_occlusion_texture_id);
-        if (!albedo_texture || !normal_texture || !roughness_metallic_occlusion_texture)
+        Asset* occlusion_roughness_metallic_texture = get_asset(asset->info.material_info.material.occlusion_roughness_metallic_texture_id);
+        if (!albedo_texture || !normal_texture || !occlusion_roughness_metallic_texture)
         {
             dependencies_loaded = false;
         }
@@ -360,7 +390,7 @@ void draw_mesh(u64 id, Renderer_Transform renderer_transform)
             Asset* material = get_asset(sub_mesh->info.sub_mesh_info.material_index);
             if (sub_mesh && material)
             {
-                assert(sub_mesh->info.type == ASSET_TYPE_SUB_MESH && material->info.type == ASSET_TYPE_MATERIAL);
+                assert(sub_mesh->info.type == ASSET_TYPE_SUB_MESH && (material->info.type == ASSET_TYPE_MATERIAL || material->renderer_material.id == 0));
 
                 renderer_draw_buffer(mesh->renderer_buffer, sub_mesh->info.sub_mesh_info.index_offset, sub_mesh->info.sub_mesh_info.index_count, material->renderer_material, renderer_transform);
             }
