@@ -20,6 +20,16 @@ void game_init(Game_State* game_state)
     {
         op->transform = xform_buffer2;
         m4x4* mem = (m4x4*)op->memory;
+        *mem = identity();
+        renderer_queue_transfer(op);
+    }
+
+    Renderer_Transform xform_buffer3 = renderer_create_transform_reference(2);
+    op = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM);
+    if (op)
+    {
+        op->transform = xform_buffer3;
+        m4x4* mem = (m4x4*)op->memory;
         *mem = translate(identity(), {2, 0, 0});
         renderer_queue_transfer(op);
     }
@@ -79,7 +89,8 @@ void game_render(Frame_Parameters* frame_params)
 {
     renderer_begin_frame(frame_params);
     draw_mesh(8, renderer_create_transform_reference(0));
-    draw_mesh(12, renderer_create_transform_reference(1));
+    draw_mesh(128, renderer_create_transform_reference(1));
+    draw_mesh(234, renderer_create_transform_reference(2));
     renderer_end_frame();
 }
 

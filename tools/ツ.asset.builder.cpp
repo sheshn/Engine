@@ -1806,6 +1806,8 @@ internal u64 gltf_file_get_total_mesh_data_size(GLTF_File* gltf)
     for (u32 i = 0; i < gltf->mesh_count; ++i)
     {
         GLTF_Mesh* gltf_mesh = gltf->meshes + i;
+
+        u32 mesh_size = 0;
         for (u32 j = 0; j < gltf_mesh->primitive_count; ++j)
         {
             GLTF_Primitive* primitive = gltf_mesh->primitives + j;
@@ -1849,13 +1851,13 @@ internal u64 gltf_file_get_total_mesh_data_size(GLTF_File* gltf)
                         }
                         else
                         {
-                            u64 mesh_size = sizeof(Vertex) * attribute0_accessor->element_count + sizeof(u32) * index_buffer_accessor->element_count;
-                            mesh_data_size += ((mesh_size + sizeof(Vertex) - 1) / sizeof(Vertex)) * sizeof(Vertex);
+                            mesh_size += sizeof(Vertex) * attribute0_accessor->element_count + sizeof(u32) * index_buffer_accessor->element_count;
                         }
                     }
                 }
             }
         }
+        mesh_data_size += ((mesh_size + sizeof(Vertex) - 1) / sizeof(Vertex)) * sizeof(Vertex);
     }
 
     return mesh_data_size;
@@ -1870,22 +1872,17 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
         Asset_Info* asset = tsu->assets + tsu->current_asset_index;
         asset->type = ASSET_TYPE_MESH;
         asset->data_offset = tsu->current_asset_data_offset + tsu->asset_data_offset;
+        asset->data_size = 0;
         tsu->current_asset_index++;
 
         // NOTE: The mesh's first sub mesh index will also take the 'null' asset into consideration even though it doesn't need to since a sub-mesh will always be after a mesh asset
         asset->mesh_info.first_sub_mesh_index = tsu->current_asset_index + 1;
         asset->mesh_info.sub_mesh_count = gltf_mesh->primitive_count;
 
-        u32 index_offset = 0;
+        u64 first_vertex_offset = tsu->current_asset_data_offset;
         for (u32 j = 0; j < gltf_mesh->primitive_count; ++j)
         {
             GLTF_Primitive* primitive = gltf_mesh->primitives + j;
-
-            Asset_Info* sub_mesh_asset = tsu->assets + tsu->current_asset_index + j;
-            sub_mesh_asset->type = ASSET_TYPE_SUB_MESH;
-            sub_mesh_asset->data_offset = 0;
-            sub_mesh_asset->data_size = 0;
-            sub_mesh_asset->sub_mesh_info.material_index = primitive->material_index + (primitive->material_index == 0 ? 0 : tsu->current_material_base_index);
 
             if (primitive->indices_accessor_index != 0 && primitive->mode == GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST && primitive->attribute_count > 0)
             {
@@ -1937,10 +1934,31 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                         }
                     }
 
-                    sub_mesh_asset->sub_mesh_info.index_offset = sizeof(Vertex) * vertex_count;
-                    sub_mesh_asset->sub_mesh_info.index_count = index_buffer_accessor->element_count;
+                    u32 vertices_size = sizeof(Vertex) * vertex_count;
+                    asset->data_size += vertices_size;
+                    tsu->current_asset_data_offset += vertices_size;
+                }
+            }
+        }
 
-                    tsu->current_asset_data_offset += sub_mesh_asset->sub_mesh_info.index_offset;
+        u32 index_offset = 0;
+        for (u32 j = 0; j < gltf_mesh->primitive_count; ++j)
+        {
+            GLTF_Primitive* primitive = gltf_mesh->primitives + j;
+
+            Asset_Info* sub_mesh_asset = tsu->assets + tsu->current_asset_index + j;
+            sub_mesh_asset->type = ASSET_TYPE_SUB_MESH;
+            sub_mesh_asset->data_offset = 0;
+            sub_mesh_asset->data_size = 0;
+            sub_mesh_asset->sub_mesh_info.material_index = primitive->material_index + (primitive->material_index == 0 ? 0 : tsu->current_material_base_index);
+
+            if (primitive->indices_accessor_index != 0 && primitive->mode == GLTF_PRIMITIVE_TYPE_TRIANGLE_LIST && primitive->attribute_count > 0)
+            {
+                GLTF_Accessor* index_buffer_accessor = gltf->accessors + primitive->indices_accessor_index - 1;
+                if (index_buffer_accessor->buffer_view_index != 0)
+                {
+                    sub_mesh_asset->sub_mesh_info.index_offset = tsu->current_asset_data_offset - first_vertex_offset;
+                    sub_mesh_asset->sub_mesh_info.index_count = index_buffer_accessor->element_count;
 
                     GLTF_Buffer_View* index_buffer_view = gltf->buffer_views + index_buffer_accessor->buffer_view_index - 1;
                     GLTF_Buffer* index_buffer = gltf->buffers + index_buffer_view->buffer_index;
@@ -1962,21 +1980,21 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                             *((u32*)(tsu->asset_data + tsu->current_asset_data_offset) + element_index) = index + index_offset;
                         }
 
-                        index_offset = (u32)index_buffer_accessor->max.data[0] + 1;
-                    }
+                        index_offset += (u32)index_buffer_accessor->max.data[0] + 1;
 
-                    // NOTE: Make mesh's size a multiple of the sizeof(Vertex) after including indices.
-                    // This allows us to have the vertex/index buffer format on the Vulkan side be
-                    // [V_SM_11 | I_SM_11 | V_SM_12 | I_SM_12 | V_SM_21 | I_SM_21 | V_SM_22 | I_SM_22 ...]
-                    // We will then be able to get the correct vertex_offset and index_offset when we issue the draw command.
-                    // TODO: Do we actually want to do this?
-                    u32 mesh_size = sizeof(Vertex) * vertex_count + sizeof(u32) * index_buffer_accessor->element_count;
-                    asset->data_size = ((mesh_size + sizeof(Vertex) - 1) / sizeof(Vertex)) * sizeof(Vertex);
-                    tsu->current_asset_data_offset += asset->data_size - sub_mesh_asset->sub_mesh_info.index_offset;
+                        u32 indices_size = sizeof(u32) * index_buffer_accessor->element_count;
+                        asset->data_size += indices_size;
+                        tsu->current_asset_data_offset += indices_size;
+                    }
                 }
             }
-            tsu->current_asset_index++;
         }
+
+        u32 padded_mesh_size = ((asset->data_size + sizeof(Vertex) - 1) / sizeof(Vertex)) * sizeof(Vertex);
+        tsu->current_asset_data_offset += padded_mesh_size - asset->data_size;
+        asset->data_size = padded_mesh_size;
+
+        tsu->current_asset_index += gltf_mesh->primitive_count;
     }
 }
 
@@ -2086,6 +2104,8 @@ internal TSU_File create_tsu_file(GLTF_File* gltf_files, u32 gltf_file_count)
 
         tsu_file.current_texture_base_index = tsu_file.current_asset_index;
     }
+    assert(tsu_file.current_asset_data_offset == tsu_file.asset_data_size);
+
     return tsu_file;
 }
 
