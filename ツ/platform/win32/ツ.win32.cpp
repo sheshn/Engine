@@ -170,16 +170,16 @@ void read_data_from_file(Platform_File_Handle* file_handle, u64 offset, u64 size
     }
 
     // NOTE: Windows only does reads up to 4gb!
-    u32 file_size = (u32)size;
+    u32 read_size = (u32)size;
 
     OVERLAPPED overlapped = {};
     overlapped.Offset = (u32)((offset >> 0) & 0xFFFFFFFF);
     overlapped.OffsetHigh = (u32)((offset >> 32) & 0xFFFFFFFF);
 
     DWORD bytes_read;
-    if (!ReadFile(file->win32_handle, dest, file_size, &bytes_read, &overlapped) || bytes_read != file_size)
+    if (!ReadFile(file->win32_handle, dest, read_size, &bytes_read, &overlapped) || bytes_read != read_size)
     {
-        file_handle_push_error(file, "unable to read file\n");
+        file_handle_push_error(file, "error reading file (bytes read: %u, bytes requested: %u)\n", bytes_read, read_size);
     }
 }
 

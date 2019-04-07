@@ -140,6 +140,7 @@ b32 init_asset_system(Memory_Arena* memory_arena)
     return true;
 }
 
+// TODO: Manage renderer handles properly
 internal Renderer_Texture get_next_renderer_texture_reference(u32 texture_width, u32 texture_height)
 {
     return renderer_create_texture_reference(assets.current_renderer_texture_id++, texture_width, texture_height);
@@ -224,7 +225,9 @@ internal void load_material(Asset* asset)
             material->roughness_metallic_occlusion_texture_id = roughness_metallic_occlusion_texture->renderer_texture.id;
 
             renderer_queue_transfer(asset->transfer_operation, &asset->loaded_counter);
+
             asset->state = ASSET_STATE_QUEUED;
+            asset->transfer_operation = NULL;
         }
     }
 }

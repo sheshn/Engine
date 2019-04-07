@@ -3,6 +3,7 @@
 void game_init(Game_State* game_state)
 {
     // TODO: Remove this test code
+    // TODO: Handle transforms properly!
     Renderer_Transform xform_buffer = renderer_create_transform_reference(0);
     Renderer_Transfer_Operation* op = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM);
     if (op)
@@ -10,6 +11,16 @@ void game_init(Game_State* game_state)
         op->transform = xform_buffer;
         m4x4* mem = (m4x4*)op->memory;
         *mem = identity();
+        renderer_queue_transfer(op);
+    }
+
+    Renderer_Transform xform_buffer2 = renderer_create_transform_reference(1);
+    op = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TRANSFORM);
+    if (op)
+    {
+        op->transform = xform_buffer2;
+        m4x4* mem = (m4x4*)op->memory;
+        *mem = translate(identity(), {2, 0, 0});
         renderer_queue_transfer(op);
     }
 }
@@ -67,7 +78,8 @@ void game_update(Frame_Parameters* frame_params)
 void game_render(Frame_Parameters* frame_params)
 {
     renderer_begin_frame(frame_params);
-    draw_mesh(3, renderer_create_transform_reference(0));
+    draw_mesh(8, renderer_create_transform_reference(0));
+    draw_mesh(12, renderer_create_transform_reference(1));
     renderer_end_frame();
 }
 

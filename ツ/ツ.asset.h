@@ -64,4 +64,4 @@ struct Asset_Info
 
 b32 init_asset_system(Memory_Arena* memory_arena);
 
-void draw_mesh(u64 id);
+void draw_mesh(u64 id, Renderer_Transform renderer_transform);

@@ -1776,7 +1776,12 @@ internal u64 gltf_file_get_total_texture_data_size(GLTF_File* gltf)
             else if (image->mime_type.text)
             {
                 assert(string_starts_with(image->mime_type.text, JSON_STRING(image/vnd-ms.dds), sizeof(JSON_STRING(image/vnd-ms.dds)) - 1));
-                texture_data_size += gltf->buffer_views[image->buffer_view_index].size;
+
+                DDS_Image dds = {gltf->bin + gltf->buffer_views[image->buffer_view_index].offset};
+                if (dds_load_image(&dds))
+                {
+                    texture_data_size += dds.size;
+                }
             }
             else
             {
@@ -1785,9 +1790,7 @@ internal u64 gltf_file_get_total_texture_data_size(GLTF_File* gltf)
         }
     }
 
-    // NOTE: We don't want the DDS file header to be in the tsu file
-    // TODO: Are all dds textures going to be DXT10?
-    return texture_data_size - (sizeof(u32) + sizeof(DDS_Header) + sizeof(DDS_Header_DXT10)) * gltf->texture_count;
+    return texture_data_size;
 }
 
 internal u64 gltf_file_get_total_mesh_data_size(GLTF_File* gltf)
