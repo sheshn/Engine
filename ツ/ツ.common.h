@@ -16,7 +16,7 @@
 #define megabytes(value) (kilobytes((value)) * 1024)
 #define gigabytes(value) (megabytes((value)) * 1024)
 
-void copy_memory(void* dest, void* src, u64 size)
+internal void copy_memory(void* dest, void* src, u64 size)
 {
     u8* d = (u8*)dest;
     u8* s = (u8*)src;
@@ -60,3 +60,17 @@ internal void memory_arena_reset(Memory_Arena* arena)
 }
 
 #define memory_arena_reserve_array(arena, type, count) (type*)memory_arena_reserve((arena), sizeof(type) * (count))
+
+internal u16 safe_cast_u32_to_u16(u32 value)
+{
+    u16 result = (u16)value;
+    assert(result == value);
+    return result;
+}
+
+internal u8 safe_cast_u32_to_u8(u32 value)
+{
+    u8 result = (u8)value;
+    assert(result == value);
+    return result;
+}

@@ -39,6 +39,7 @@ struct Texture_Info
     u32 width;
     u32 height;
     u32 mipmap_count;
+    u32 format;
 };
 
 struct Material_Info

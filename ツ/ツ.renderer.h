@@ -6,12 +6,13 @@ struct Renderer_Buffer
     u32 reserved;
 };
 
-// TODO: Renderer_Texture needs the format since textures can be either BC5 (normal map) or BC7_SRGB (everything else)
 struct Renderer_Texture
 {
-    u32 id;
+    u16 id;
     u16 width;
     u16 height;
+    u8  mipmap_count;
+    u8  format;
 };
 
 typedef Renderer_Buffer Renderer_Material;
@@ -96,7 +97,7 @@ struct Renderer_Transfer_Queue
 
 // TODO: Consider removing 'renderer' prefix from all of these
 Renderer_Buffer    renderer_create_buffer_reference(u32 id);
-Renderer_Texture   renderer_create_texture_reference(u32 id, u32 width, u32 height);
+Renderer_Texture   renderer_create_texture_reference(u32 id, u32 width, u32 height, u32 mipmap_count, u32 format);
 Renderer_Material  renderer_create_material_reference(u32 id);
 Renderer_Transform renderer_create_transform_reference(u32 id);
 

@@ -5,9 +5,9 @@ Renderer_Buffer renderer_create_buffer_reference(u32 id)
     Renderer_Buffer buffer = {id};
     return buffer;
 }
-Renderer_Texture renderer_create_texture_reference(u32 id, u32 width, u32 height)
+Renderer_Texture renderer_create_texture_reference(u32 id, u32 width, u32 height, u32 mipmap_count, u32 format)
 {
-    Renderer_Texture texture = {id, (u16)width, (u16)height};
+    Renderer_Texture texture = {safe_cast_u32_to_u16(id), safe_cast_u32_to_u16(width), safe_cast_u32_to_u16(height), safe_cast_u32_to_u8(mipmap_count), safe_cast_u32_to_u8(format)};
     return texture;
 }
 

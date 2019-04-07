@@ -1160,6 +1160,7 @@ enum GLTF_Alpha_Mode
 struct GLTF_MSFT_Packing_Occlusion_Roughness_Metallic_Extension
 {
     GLTF_Material_Texture occlusion_roughness_metallic_texture;
+    GLTF_Material_Texture normal_texture;
 };
 
 struct GLTF_Material
@@ -1194,6 +1195,7 @@ GLTF_INIT_OBJECT(init_gltf_material)
     o->alpha_mode = GLTF_ALPHA_MODE_OPAQUE;
     o->alpha_cutoff = 0.5f;
     o->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.scale = 1.0f;
+    o->packing_occlusion_roughness_metallic_extension.normal_texture.scale = 1.0f;
 }
 
 struct GLTF_File
@@ -1598,6 +1600,7 @@ GLTF_PARSE_OBJECT(parse_gltf_msft_packing_occlusion_roughness_metallic)
 
     b32 found = false;
     json_value_parse_gltf_object(tokenizer, JSON_STRING(occlusionRoughnessMetallicTexture), &packing->occlusion_roughness_metallic_texture, parse_gltf_material_texture, key, value, &found);
+    json_value_parse_gltf_object(tokenizer, JSON_STRING(normalTexture), &packing->normal_texture, parse_gltf_material_texture, key, value, &found);
     GLTF_CHECK_PARSE(found, key, value);
 }
 
@@ -1778,9 +1781,13 @@ internal u64 gltf_file_get_total_texture_data_size(GLTF_File* gltf)
                 assert(string_starts_with(image->mime_type.text, JSON_STRING(image/vnd-ms.dds), sizeof(JSON_STRING(image/vnd-ms.dds)) - 1));
 
                 DDS_Image dds = {gltf->bin + gltf->buffer_views[image->buffer_view_index].offset};
-                if (dds_load_image(&dds))
+                if (dds_load_image(&dds) && (dds.format == DXGI_FORMAT_BC5_UNORM || dds.format == DXGI_FORMAT_BC7_UNORM || dds.format == DXGI_FORMAT_BC7_UNORM_SRGB))
                 {
                     texture_data_size += dds.size;
+                }
+                else
+                {
+                    fprintf(stderr, "ERROR: unable to load dds image (texture: %u, format: %u)\n", i, (u32)dds.format);
                 }
             }
             else
@@ -1985,7 +1992,7 @@ internal void gltf_to_tsu_materials(GLTF_File* gltf, TSU_File* tsu)
         asset->data_size = 0;
 
         asset->material_info.material.albedo_texture_id = gltf_material->pbr_metallic_roughness.base_color_texture.texture_index + (gltf_material->pbr_metallic_roughness.base_color_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
-        asset->material_info.material.normal_texture_id = gltf_material->normal_texture.texture_index + (gltf_material->normal_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
+        asset->material_info.material.normal_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.normal_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.normal_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
         asset->material_info.material.roughness_metallic_occlusion_texture_id = gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index + (gltf_material->packing_occlusion_roughness_metallic_extension.occlusion_roughness_metallic_texture.texture_index == 0 ? 0 : tsu->current_texture_base_index);
         asset->material_info.material.base_color_factor = gltf_material->pbr_metallic_roughness.base_color_factor;
         asset->material_info.material.metallic_factor = gltf_material->pbr_metallic_roughness.metallic_factor;
@@ -2018,16 +2025,16 @@ internal void gltf_to_tsu_textures(GLTF_File* gltf, TSU_File* tsu)
             else if (image->mime_type.text)
             {
                 DDS_Image dds = {gltf->bin + gltf->buffer_views[image->buffer_view_index].offset};
-                if (!dds_load_image(&dds))
-                {
-                    fprintf(stderr, "ERROR: unable to load texture %u!\n", i);
-                }
-                else
+                if (dds_load_image(&dds) && (dds.format == DXGI_FORMAT_BC5_UNORM || dds.format == DXGI_FORMAT_BC7_UNORM || dds.format == DXGI_FORMAT_BC7_UNORM_SRGB))
                 {
                     asset->data_size = dds.size;
                     asset->texture_info.width = dds.levels[0].width;
                     asset->texture_info.height = dds.levels[0].height;
                     asset->texture_info.mipmap_count = dds.mipmap_count;
+                    #define VK_FORMAT_BC5_UNORM_BLOCK 141
+                    #define VK_FORMAT_BC7_UNORM_BLOCK 145
+                    #define VK_FORMAT_BC7_SRGB_BLOCK  146
+                    asset->texture_info.format = dds.format == DXGI_FORMAT_BC5_UNORM ? VK_FORMAT_BC5_UNORM_BLOCK : (dds.format == DXGI_FORMAT_BC7_UNORM ? VK_FORMAT_BC7_UNORM_BLOCK : VK_FORMAT_BC7_SRGB_BLOCK);
 
                     copy_memory(tsu->asset_data + tsu->current_asset_data_offset, dds.levels[0].data, dds.size);
                     tsu->current_asset_data_offset += dds.size;

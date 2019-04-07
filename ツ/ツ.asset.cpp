@@ -141,9 +141,9 @@ b32 init_asset_system(Memory_Arena* memory_arena)
 }
 
 // TODO: Manage renderer handles properly
-internal Renderer_Texture get_next_renderer_texture_reference(u32 texture_width, u32 texture_height)
+internal Renderer_Texture get_next_renderer_texture_reference(u32 texture_width, u32 texture_height, u32 mipmap_count, u32 format)
 {
-    return renderer_create_texture_reference(assets.current_renderer_texture_id++, texture_width, texture_height);
+    return renderer_create_texture_reference(assets.current_renderer_texture_id++, texture_width, texture_height, mipmap_count, format);
 }
 
 internal Renderer_Material get_next_renderer_material_reference()
@@ -175,7 +175,7 @@ internal void load_texture(Asset* asset)
     asset->transfer_operation = renderer_request_transfer(RENDERER_TRANSFER_OPERATION_TYPE_TEXTURE, asset->info.data_size);
     if (asset->transfer_operation)
     {
-        asset->renderer_texture = get_next_renderer_texture_reference(asset->info.texture_info.width, asset->info.texture_info.height);
+        asset->renderer_texture = get_next_renderer_texture_reference(asset->info.texture_info.width, asset->info.texture_info.height, asset->info.texture_info.mipmap_count, asset->info.texture_info.format);
         asset->transfer_operation->texture = asset->renderer_texture;
 
         Job load_asset_job = {load_asset_entry_point, asset};

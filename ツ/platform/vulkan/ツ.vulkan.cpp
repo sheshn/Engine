@@ -296,8 +296,10 @@ struct Renderer
     VkImage             framebuffer_depth_attachment_image;
     VkImageView         framebuffer_depth_attachment_image_view;
 
+    VkFormat framebuffer_color_attachment_format;
+    VkFormat framebuffer_depth_attachment_format;
+
     VkSampler texture_2d_sampler;
-    VkFormat  texture_2d_format;
     u32       max_2d_textures;
 
     Vulkan_Buffer*  mesh_buffers;
@@ -570,6 +572,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkDescriptorSetLayout layouts[] = {renderer.static_descriptor_set_layout, renderer.per_frame_descriptor_set_layout};
 
+    renderer.framebuffer_color_attachment_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    renderer.framebuffer_depth_attachment_format = VK_FORMAT_D32_SFLOAT;
+    // TODO: Pass in as a renderer setting?
     recreate_framebuffers(1920, 1080);
 
     // TODO: Make it easier to create piplines!
@@ -730,16 +735,12 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkWriteDescriptorSet storage_writes[] = {material_storage_write, xform_storage_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(storage_writes), storage_writes, 0, NULL);
 
-    // NOTE: Using BC7 format for all 2D textures for now
-    // TODO: Need to support normal maps which will have BC5 format
-    renderer.texture_2d_format = VK_FORMAT_BC7_SRGB_BLOCK;
-
     // NOTE: Creating a dummy image to get memory type bits in order to allocate texture memory.
     // All 2D textures that will need to use this memory should have the same memory requirements.
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.imageType = VK_IMAGE_TYPE_2D;
-    image_create_info.format = renderer.texture_2d_format;
+    image_create_info.format = VK_FORMAT_BC7_SRGB_BLOCK;
     image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -989,8 +990,8 @@ internal void recreate_framebuffers(u32 render_width, u32 render_height)
     renderer.render_width = render_width;
     renderer.render_height = render_height;
 
-    VkFormat depth_attachment_format = VK_FORMAT_D32_SFLOAT;
-    VkFormat color_attachment_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat depth_attachment_format = renderer.framebuffer_depth_attachment_format;
+    VkFormat color_attachment_format = renderer.framebuffer_color_attachment_format;
 
     // TODO: Free all attachment images and image views if they were previously allocated.
     // Either reuse memory block (if new attachments size < old size) or free and reallocate.
@@ -1367,14 +1368,15 @@ internal void resolve_pending_transfer_operations()
                     VkImageCreateInfo image_create_info = {};
                     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
                     image_create_info.imageType = VK_IMAGE_TYPE_2D;
-                    image_create_info.format = renderer.texture_2d_format;
+                    image_create_info.format = (VkFormat)operation->texture.format;
                     image_create_info.extent = {operation->texture.width, operation->texture.height, 1};
-                    // NOTE: This assumes all textures have all mipmaps in them.
-                    image_create_info.mipLevels = most_significant_bit_index(max(operation->texture.width, operation->texture.height)) + 1;
+                    image_create_info.mipLevels = operation->texture.mipmap_count;
                     image_create_info.arrayLayers = 1;
                     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
                     image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
                     image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+                    assert(image_create_info.format == VK_FORMAT_BC7_SRGB_BLOCK || image_create_info.format == VK_FORMAT_BC7_UNORM_BLOCK || image_create_info.format == VK_FORMAT_BC5_UNORM_BLOCK);
 
                     // TODO: Reuse texture slot. We also need to free the textures at this slot if it was previously used.
                     // Also vulkan_memory_block_reserve_image just reserves image memory from where renderer.texture_memory_used is.
@@ -1414,7 +1416,7 @@ internal void resolve_pending_transfer_operations()
                         buffer_image_copy_region->imageExtent = {width, height, 1};
                         buffer_image_copy_region->bufferOffset = buffer_offset;
 
-                        // NOTE: This calculates size of a mip level for the BC7 format
+                        // NOTE: This calculates size of a mip level for the BC5/BC7 format
                         buffer_offset += max(1, (width + 3) / 4) * 16 * max(1, (height + 3) / 4);
                         width = max(1, width >> 1);
                         height = max(1, height >> 1);
@@ -1740,7 +1742,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     VkResult result = acquire_next_image(frame_resources->image_available_semaphore, &frame_resources->swapchain_image_index);
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
-        // TODO: Recreate swapchain/resources
+        recreate_swapchain(vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
         return;
     }
     else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
@@ -1771,7 +1773,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     result = vkQueuePresentKHR(vulkan_context.present_queue, &present_info);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
-        // TODO: Recreate swapchain/resources
+        recreate_swapchain(vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
         return;
     }
     else if (result != VK_SUCCESS)
