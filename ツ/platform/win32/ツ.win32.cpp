@@ -37,8 +37,8 @@ extern "C" void* __cdecl memcpy(void* dest, const void* src, size_t size)
 
 #define MAX_FRAMES 16
 
-internal u32 window_width = 800;
-internal u32 window_height = 600;
+internal u32 window_width = 1600;
+internal u32 window_height = 900;
 internal b32 running = false;
 
 void DEBUG_printf(char* format, ...)

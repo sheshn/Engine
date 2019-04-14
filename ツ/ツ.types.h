@@ -31,6 +31,14 @@ union v2
     struct { float u, v; };
 };
 
+union uv2
+{
+    u32 data[2];
+
+    struct { u32 x, y; };
+    struct { u32 u, v; };
+};
+
 union v3
 {
     float data[3];
@@ -39,12 +47,28 @@ union v3
     struct { float r, g, b; };
 };
 
+union uv3
+{
+    u32 data[3];
+
+    struct { u32 x, y, z; };
+    struct { u32 r, g, b; };
+};
+
 union v4
 {
     float data[4];
 
     struct { float x, y, z, w; };
     struct { float r, g, b, a; };
+};
+
+union uv4
+{
+    u32 data[4];
+
+    struct { u32 x, y, z, w; };
+    struct { u32 r, g, b, a; };
 };
 
 union quat

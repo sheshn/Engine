@@ -29,6 +29,7 @@ typedef Renderer_Buffer Renderer_Transform;
 struct Vertex
 {
     v3 position;
+    v3 normal;
     v2 uv0;
 };
 

@@ -53,13 +53,15 @@ void game_update(Frame_Parameters* frame_params)
         frame_params->camera.rotation *= normalize(axis_angle(normalize(v3{0, -1, 0}), 0.001f));
     }
 
+    f32 speed = 100;
+
     if (frame_params->input.button_up.is_down)
     {
-        frame_params->camera.position += normalize(v3{0, 0, 1} * frame_params->camera.rotation) * 0.0005f * distance_to_target;
+        frame_params->camera.position += normalize(v3{0, 0, 1} * frame_params->camera.rotation) * 0.0005f * distance_to_target * speed;
     }
     else if (frame_params->input.button_down.is_down)
     {
-        frame_params->camera.position += normalize(v3{0, 0, -1} * frame_params->camera.rotation) * 0.0005f * distance_to_target;
+        frame_params->camera.position += normalize(v3{0, 0, -1} * frame_params->camera.rotation) * 0.0005f * distance_to_target * speed;
     }
     else if (frame_params->input.mouse_delta.z != 0)
     {
@@ -88,9 +90,9 @@ void game_update(Frame_Parameters* frame_params)
 void game_render(Frame_Parameters* frame_params)
 {
     renderer_begin_frame(frame_params);
-    draw_mesh(8, renderer_create_transform_reference(0));
+    // draw_mesh(8, renderer_create_transform_reference(0));
     draw_mesh(128, renderer_create_transform_reference(1));
-    draw_mesh(234, renderer_create_transform_reference(2));
+    // draw_mesh(234, renderer_create_transform_reference(2));
     renderer_end_frame();
 }
 

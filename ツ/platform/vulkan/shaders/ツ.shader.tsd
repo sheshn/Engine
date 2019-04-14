@@ -10,6 +10,7 @@
 #define v3 vec3
 #define v4 vec4
 #define uv2 uvec2
+#define uv3 uvec3
 #define m4x4 mat4
 
 struct Material
@@ -30,34 +31,83 @@ struct Transform
     m4x4 model;
 };
 
+struct Voxel_Data
+{
+    u32 color;
+};
+
 struct Frame_Uniforms
 {
     m4x4 view_projection;
+
+    v3  voxel_grid_origin;
+    f32 voxel_grid_resolution;
+    f32 voxel_size;
 };
 
-layout Default_Layout_Vertex
+u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
+{
+    return (index_3d.z * dimension.x * dimension.y) + (index_3d.y * dimension.x) + index_3d.x;
+}
+
+uv3 index_1d_to_index_3d(u32 index, uv3 dimension)
+{
+    u32 z = index / (dimension.x * dimension.y);
+    index -= (z * dimension.x * dimension.y);
+    return uv3(index % dimension.x, index / dimension.y, z);
+}
+
+u32 encode_v4_color_as_u32(v4 color)
+{
+    // TODO: Tune this value
+    f32 hdr_range = 10;
+    f32 hdr = length(color.rgb);
+    color.rgb /= hdr;
+
+    uv3 c = uv3(color.rgb * 255.0);
+    u32 h = u32(clamp(hdr / hdr_range, 0, 1) * 127.0);
+    u32 a = color.a > 0 ? 1 : 0;
+
+    return (h << 24) | (c.r << 16) | (c.g << 8) | (c.b) | (a << 31);
+}
+
+v4 decode_u32_color_as_v4(u32 color)
+{
+    // TODO: Tune this value
+    f32 hdr_range = 10;
+    f32 hdr = ((color >> 24) & 0x0000007F) / 127.0;
+
+    v4 result = v4((color >> 16) & 0x000000FF, (color >> 8) & 0X000000FF, color & 0X000000FF, (color >> 31) & 0x00000001);
+    result.rgb *= hdr * hdr_range / 255.0;
+    return result;
+}
+
+layout Default_Vertex_Layout
 {
     layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) in uv2 in_instance_data;
     layout(location = 1) in v3 in_position;
-    layout(location = 2) in v2 in_uv0;
+    layout(location = 2) in v3 in_normal;
+    layout(location = 3) in v2 in_uv0;
 
     layout(location = 0) flat out uv2 out_instance_data;
-    layout(location = 1) out v2 out_uv0;
+    layout(location = 1) out v3 out_normal;
+    layout(location = 2) out v2 out_uv0;
 };
 
-vertex(Default_Layout_Vertex) void default_vertex_shader()
+vertex(Default_Vertex_Layout) void default_vertex_shader()
 {
     Transform xform = xforms[in_instance_data.x];
     gl_Position = frame_uniforms.view_projection * xform.model * v4(in_position.xyz, 1.0);
 
     out_instance_data = in_instance_data;
+    out_normal = in_normal;
     out_uv0 = in_uv0;
 }
 
-layout Default_Layout_Fragment
+layout Default_Fragment_Layout
 {
     layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
     layout(set = 0, binding = 1) uniform texture2D textures_2d[];
@@ -66,29 +116,30 @@ layout Default_Layout_Fragment
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) flat in uv2 in_instance_data;
-    layout(location = 1) in v2 in_uv0;
+    layout(location = 1) in v3 in_normal;
+    layout(location = 2) in v2 in_uv0;
 
     layout(location = 0) out v4 out_color;
 };
 
-fragment(Default_Layout_Fragment) void default_fragment_shader()
+fragment(Default_Fragment_Layout) void default_fragment_shader()
 {
     Material material = materials[in_instance_data.y];
     out_color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
 }
 
-layout Final_Pass_Layout_Vertex
+layout Final_Pass_Vertex_Layout
 {
     layout(location = 0) out v2 out_uv;
 };
 
-vertex(Final_Pass_Layout_Vertex) void final_pass_vertex_shader()
+vertex(Final_Pass_Vertex_Layout) void final_pass_vertex_shader()
 {
     out_uv = v2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
     gl_Position = v4(out_uv * 2.0 - 1.0, 0, 1.0);
 }
 
-layout Final_Pass_Layout_Fragment
+layout Final_Pass_Fragment_Layout
 {
     layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
     layout(set = 0, binding = 1) uniform texture2D color0_attachment;
@@ -98,8 +149,167 @@ layout Final_Pass_Layout_Fragment
     layout(location = 0) out v4 out_color;
 };
 
-fragment(Final_Pass_Layout_Fragment) void final_pass_fragment_shader()
+fragment(Final_Pass_Fragment_Layout) void final_pass_fragment_shader()
 {
     // TODO: Tonemap!
     out_color = texture(sampler2D(color0_attachment, texture_2d_sampler), in_uv);
+}
+
+vertex(Default_Vertex_Layout) void voxelizer_vertex_shader()
+{
+    Transform xform = xforms[in_instance_data.x];
+    gl_Position = xform.model * v4(in_position.xyz, 1.0);
+
+    out_instance_data = in_instance_data;
+    out_normal = in_normal;
+    out_uv0 = in_uv0;
+}
+
+layout Voxelizer_Geometry_Layout
+{
+    layout(triangles) in;
+    layout(triangle_strip, max_vertices = 3) out;
+
+    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+
+    layout(location = 0) flat in uv2 in_instance_data[];
+    layout(location = 1) in v3 in_normal[];
+    layout(location = 2) in v2 in_uv0[];
+
+    layout(location = 0) flat out uv2 out_instance_data;
+    layout(location = 1) out v3 out_position;
+    layout(location = 2) out v3 out_normal;
+    layout(location = 3) out v2 out_uv0;
+};
+
+geometry(Voxelizer_Geometry_Layout) void voxelizer_geometry_shader()
+{
+    v3 normal = abs(in_normal[0] + in_normal[1] + in_normal[2]);
+    u32 max_index = normal.y > normal.x ? 1 : 0;
+    max_index = normal.z > normal[max_index] ? 2 : max_index;
+
+    v3 positions[3];
+    for (u32 i = 0; i < 3; ++i)
+    {
+        positions[i] = (gl_in[i].gl_Position.xyz - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_size;
+        if (max_index == 0)
+        {
+            positions[i].xyz = positions[i].zyx;
+        }
+        else if (max_index == 1)
+        {
+            positions[i].xyz = positions[i].xzy;
+        }
+    }
+
+    // NOTE: Enlarge triangle to achieve conservative rasterization
+    v2 s0 = normalize(positions[1].xy - positions[0].xy);
+    v2 s1 = normalize(positions[2].xy - positions[1].xy);
+    v2 s2 = normalize(positions[0].xy - positions[2].xy);
+    positions[0].xy += normalize(s2 - s0);
+    positions[1].xy += normalize(s0 - s1);
+    positions[2].xy += normalize(s1 - s2);
+
+    for (u32 i = 0; i < 3; ++i)
+    {
+        out_instance_data = in_instance_data[i];
+        out_position = gl_in[i].gl_Position.xyz;
+        out_normal = in_normal[i];
+        out_uv0 = in_uv0[i];
+
+        gl_Position = v4(positions[i].xy / frame_uniforms.voxel_grid_resolution, 1, 1);
+        EmitVertex();
+    }
+    EndPrimitive();
+}
+
+layout Voxelizer_Fragment_Layout
+{
+    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
+    layout(set = 0, binding = 1) uniform texture2D textures_2d[];
+    layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
+    layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
+    layout(set = 0, binding = 4) buffer voxel_storage_buffer { Voxel_Data voxel_data[]; };
+    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+
+    layout(location = 0) flat in uv2 in_instance_data;
+    layout(location = 1) in v3 in_position;
+    layout(location = 2) in v3 in_normal;
+    layout(location = 3) in v2 in_uv0;
+};
+
+fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
+{
+    v3 uvw = 0.5 * (in_position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size + v3(0.5);
+    u32 index = index_3d_to_index_1d(uv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), uv3(frame_uniforms.voxel_grid_resolution));
+
+    Material material = materials[in_instance_data.y];
+    u32 encoded_color = encode_v4_color_as_u32(texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor);
+
+    // TODO: Switch to 3D texture
+    atomicMax(voxel_data[index].color, encoded_color);
+}
+
+layout DEBUG_Voxel_Visualizer_Vertex_Layout
+{
+    layout(set = 0, binding = 4) buffer voxel_storage_buffer { Voxel_Data voxel_data[]; };
+    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+
+    layout(location = 0) out v4 out_color;
+};
+
+vertex(DEBUG_Voxel_Visualizer_Vertex_Layout) void DEBUG_voxel_visualizer_vertex_shader()
+{
+    gl_Position = v4(index_1d_to_index_3d(gl_VertexIndex, uv3(frame_uniforms.voxel_grid_resolution)), 1);
+
+    out_color = decode_u32_color_as_v4(voxel_data[gl_VertexIndex].color);
+}
+
+layout DEBUG_Voxel_Visualizer_Geometry_Layout
+{
+    layout(points) in;
+    layout(triangle_strip, max_vertices = 14) out;
+
+    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+
+    layout(location = 0) in v4 in_color[];
+
+    layout(location = 0) out v4 out_color;
+};
+
+v3 cube_vertex(u32 vertex_id)
+{
+    u32 b = 1 << vertex_id;
+    return v3((0x287A & b) != 0, (0x02AF & b) != 0, (0x31E3 & b) != 0);
+}
+
+geometry(DEBUG_Voxel_Visualizer_Geometry_Layout) void DEBUG_voxel_visualizer_geometry_shader()
+{
+    if (in_color[0].a > 0)
+    {
+        for (u32 i = 0; i < 14; ++i)
+        {
+            out_color = in_color[0];
+
+            gl_Position.xyz = (gl_in[0].gl_Position.xyz / frame_uniforms.voxel_grid_resolution * 2 - 1) * frame_uniforms.voxel_grid_resolution;
+            gl_Position.xyz += (cube_vertex(i) - v3(0, 1, 0)) * 2;
+            gl_Position.xyz *= frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_size / frame_uniforms.voxel_grid_resolution;
+            gl_Position = frame_uniforms.view_projection * v4(gl_Position.xyz + frame_uniforms.voxel_grid_origin, 1);
+
+            EmitVertex();
+        }
+        EndPrimitive();
+    }
+}
+
+layout DEBUG_Voxel_Visualizer_Fragment_Layout
+{
+    layout(location = 0) in v4 in_color;
+
+    layout(location = 0) out v4 out_color;
+};
+
+fragment(DEBUG_Voxel_Visualizer_Fragment_Layout) void DEBUG_voxel_visualizer_fragment_shader()
+{
+    out_color = v4(in_color.rgb, 1);
 }

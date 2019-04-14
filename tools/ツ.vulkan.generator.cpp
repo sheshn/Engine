@@ -1023,6 +1023,10 @@ std::wstring get_shader_file_extension(std::string shader_type)
     {
         ext = L"frag";
     }
+    else if (shader_type == "geometry")
+    {
+        ext = L"geom";
+    }
     return ext;
 }
 
@@ -1152,7 +1156,7 @@ std::string compile_shader_file(std::wstring compiler_path, std::wstring optimiz
             {
                 parse_shader_layout(&tokenizer, shader_code, token.text - shader_code, &shader_layouts);
             }
-            else if ((token_equals(token, "vertex") || token_equals(token, "fragment")) && eat_token(&tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS))
+            else if ((token_equals(token, "vertex") || token_equals(token, "fragment") || token_equals(token, "geometry")) && eat_token(&tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS))
             {
                 parse_shader(&tokenizer, shader_code, std::string(token.text, token.length), token.text - shader_code, &shader_functions);
             }

@@ -404,6 +404,16 @@ internal m4x4 translate(m4x4 m, v3 translation)
     return m;
 }
 
+internal m4x4 scale(m4x4 m, f32 scale)
+{
+    m4x4 result;
+    result.columns[0] = m.columns[0] * scale;
+    result.columns[1] = m.columns[1] * scale;
+    result.columns[2] = m.columns[2] * scale;
+    result.columns[3] = m.columns[3];
+    return result;
+}
+
 internal quat axis_angle(v3 axis, f32 angle)
 {
     f32 a = angle * 0.5f;

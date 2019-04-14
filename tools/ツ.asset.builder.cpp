@@ -1831,7 +1831,7 @@ internal u64 gltf_file_get_total_mesh_data_size(GLTF_File* gltf)
                     {
                         GLTF_Attribute a = primitive->attributes[k];
                         if ((a.type != GLTF_ATTRIBUTE_TYPE_POSITION || (a.type == GLTF_ATTRIBUTE_TYPE_POSITION && a.set_index != 0)) &&
-                            // (a.type != GLTF_ATTRIBUTE_TYPE_NORMAL || (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL && a.set_index != 0)) ||
+                            (a.type != GLTF_ATTRIBUTE_TYPE_NORMAL || (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL && a.set_index != 0)) &&
                             // (a.type != GLTF_ATTRIBUTE_TYPE_TANGENT || (a.type == GLTF_ATTRIBUTE_TYPE_TANGENT && a.set_index != 0)) ||
                             (a.type != GLTF_ATTRIBUTE_TYPE_TEXCOORD || (a.type == GLTF_ATTRIBUTE_TYPE_TEXCOORD && a.set_index != 0)))
                         {
@@ -1895,7 +1895,7 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                     {
                         GLTF_Attribute a = primitive->attributes[k];
                         if ((a.type == GLTF_ATTRIBUTE_TYPE_POSITION && a.set_index == 0) ||
-                            // (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL && a.set_index == 0) ||
+                            (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL && a.set_index == 0) ||
                             // (a.type == GLTF_ATTRIBUTE_TYPE_TANGENT && a.set_index == 0) ||
                             (a.type == GLTF_ATTRIBUTE_TYPE_TEXCOORD && a.set_index == 0))
                         {
@@ -1923,6 +1923,10 @@ internal void gltf_to_tsu_meshes(GLTF_File* gltf, TSU_File* tsu)
                                         if (a.type == GLTF_ATTRIBUTE_TYPE_POSITION)
                                         {
                                             v->position = *(v3*)element;
+                                        }
+                                        else if (a.type == GLTF_ATTRIBUTE_TYPE_NORMAL)
+                                        {
+                                            v->normal = *(v3*)element;
                                         }
                                         else if (a.type == GLTF_ATTRIBUTE_TYPE_TEXCOORD && a.set_index == 0)
                                         {
