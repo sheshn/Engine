@@ -20,7 +20,7 @@ void game_init(Game_State* game_state)
     {
         op->transform = xform_buffer2;
         m4x4* mem = (m4x4*)op->memory;
-        *mem = identity();
+        *mem = scale(identity(), 0.008);
         renderer_queue_transfer(op);
     }
 
@@ -35,8 +35,12 @@ void game_init(Game_State* game_state)
     }
 }
 
+b32 started_down = false;
+quat camera_reference_frame = {0, 0, 0, 1};
+
 void game_update(Frame_Parameters* frame_params)
 {
+#if 0
     if (frame_params->camera.position.x == 0 && frame_params->camera.position.y == 0 && frame_params->camera.position.z == 0)
     {
         frame_params->camera.position.z = 2;
@@ -70,7 +74,12 @@ void game_update(Frame_Parameters* frame_params)
 
     if (frame_params->input.mouse_button_left.is_down)
     {
-        quat reference = {0, 0, 0, 1};
+        if (!started_down)
+        {
+            camera_reference_frame = frame_params->camera.rotation;
+            started_down = true;
+        }
+        quat reference = camera_reference_frame;
         if (frame_params->input.mouse_delta.y != 0)
         {
             reference *= normalize(axis_angle(normalize(v3{frame_params->input.mouse_delta.y, 0, 0}), 0.025f));
@@ -81,8 +90,50 @@ void game_update(Frame_Parameters* frame_params)
         }
         frame_params->camera.rotation *= reference;
     }
-
     frame_params->camera.position = normalize(v3{0, 0, -1} * frame_params->camera.rotation) * length(target - frame_params->camera.position);
+#else
+    f32 speed = 0.05f;
+    if (frame_params->input.button_up.is_down)
+    {
+        frame_params->camera.position += v3{0, 0, 1} * frame_params->camera.rotation * speed;
+    }
+    if (frame_params->input.button_down.is_down)
+    {
+        frame_params->camera.position += v3{0, 0, -1} * frame_params->camera.rotation * speed;
+    }
+    if (frame_params->input.button_left.is_down)
+    {
+        frame_params->camera.position += v3{-1, 0, 0} * frame_params->camera.rotation * speed;
+    }
+    if (frame_params->input.button_right.is_down)
+    {
+        frame_params->camera.position += v3{1, 0, 0} * frame_params->camera.rotation * speed;
+    }
+
+    if (frame_params->input.mouse_button_left.is_down)
+    {
+        if (!started_down)
+        {
+            camera_reference_frame = frame_params->camera.rotation;
+            started_down = true;
+        }
+        quat reference = {0, 0, 0, 1};
+        if (frame_params->input.mouse_delta.y != 0)
+        {
+            reference *= normalize(axis_angle(v3{1, 0, 0} * camera_reference_frame, radians(frame_params->input.mouse_delta.y * 0.1f)));
+        }
+        if (frame_params->input.mouse_delta.x != 0)
+        {
+            reference *= normalize(axis_angle(v3{0, 1, 0} * camera_reference_frame, radians(frame_params->input.mouse_delta.x * 0.1f)));
+        }
+        frame_params->camera.rotation = reference * frame_params->camera.rotation;
+    }
+    else
+    {
+        started_down = false;
+    }
+#endif
+
     frame_params->camera.view = quat_to_m4x4(conjugate(frame_params->camera.rotation)) * translate(identity(), -1 * frame_params->camera.position);
     frame_params->camera.projection = perspective_infinite(radians(90.0f), 16.0 / 9.0f, 0.01f);
 }

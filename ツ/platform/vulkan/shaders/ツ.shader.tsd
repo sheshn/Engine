@@ -11,6 +11,8 @@
 #define v4 vec4
 #define uv2 uvec2
 #define uv3 uvec3
+#define iv3 ivec3
+#define m3x3 mat3
 #define m4x4 mat4
 
 struct Material
@@ -44,18 +46,6 @@ struct Frame_Uniforms
     f32 voxel_grid_resolution;
     f32 voxel_size;
 };
-
-u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
-{
-    return (index_3d.z * dimension.x * dimension.y) + (index_3d.y * dimension.x) + index_3d.x;
-}
-
-uv3 index_1d_to_index_3d(u32 index, uv3 dimension)
-{
-    u32 z = index / (dimension.x * dimension.y);
-    index -= (z * dimension.x * dimension.y);
-    return uv3(index % dimension.x, index / dimension.y, z);
-}
 
 u32 encode_v4_color_as_u32(v4 color)
 {
@@ -161,7 +151,7 @@ vertex(Default_Vertex_Layout) void voxelizer_vertex_shader()
     gl_Position = xform.model * v4(in_position.xyz, 1.0);
 
     out_instance_data = in_instance_data;
-    out_normal = in_normal;
+    out_normal = normalize(m3x3(xform.model) * in_normal);
     out_uv0 = in_uv0;
 }
 
@@ -229,7 +219,7 @@ layout Voxelizer_Fragment_Layout
     layout(set = 0, binding = 1) uniform texture2D textures_2d[];
     layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
     layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 0, binding = 4) buffer voxel_storage_buffer { Voxel_Data voxel_data[]; };
+    layout(set = 0, binding = 4, r32ui) uniform uimage3D voxel_texture;
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) flat in uv2 in_instance_data;
@@ -240,19 +230,20 @@ layout Voxelizer_Fragment_Layout
 
 fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
 {
-    v3 uvw = 0.5 * (in_position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size + v3(0.5);
-    u32 index = index_3d_to_index_1d(uv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), uv3(frame_uniforms.voxel_grid_resolution));
+    v3 uvw = v3(0.5) * ((in_position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size) + 0.5f;
+    if (uvw == clamp(uvw, 0, 1))
+    {
+        Material material = materials[in_instance_data.y];
+        v4 color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
+        u32 encoded_color = encode_v4_color_as_u32(color);
 
-    Material material = materials[in_instance_data.y];
-    u32 encoded_color = encode_v4_color_as_u32(texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor);
-
-    // TODO: Switch to 3D texture
-    atomicMax(voxel_data[index].color, encoded_color);
+        imageAtomicMax(voxel_texture, iv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), encoded_color);
+    }
 }
 
 layout DEBUG_Voxel_Visualizer_Vertex_Layout
 {
-    layout(set = 0, binding = 4) buffer voxel_storage_buffer { Voxel_Data voxel_data[]; };
+    layout(set = 0, binding = 5) uniform usampler3D voxel_texture;
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) out v4 out_color;
@@ -260,9 +251,15 @@ layout DEBUG_Voxel_Visualizer_Vertex_Layout
 
 vertex(DEBUG_Voxel_Visualizer_Vertex_Layout) void DEBUG_voxel_visualizer_vertex_shader()
 {
-    gl_Position = v4(index_1d_to_index_3d(gl_VertexIndex, uv3(frame_uniforms.voxel_grid_resolution)), 1);
+    // NOTE: Convert 1d index to 3d index
+    u32 index = gl_VertexIndex;
+    u32 z = index / u32(frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_grid_resolution);
+    index -= (z * u32(frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_grid_resolution));
+    uv3 uvw = uv3(index % u32(frame_uniforms.voxel_grid_resolution), index / u32(frame_uniforms.voxel_grid_resolution), z);
 
-    out_color = decode_u32_color_as_v4(voxel_data[gl_VertexIndex].color);
+    gl_Position = v4(uvw, 1);
+
+    out_color = decode_u32_color_as_v4(textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0).r);
 }
 
 layout DEBUG_Voxel_Visualizer_Geometry_Layout
@@ -277,12 +274,6 @@ layout DEBUG_Voxel_Visualizer_Geometry_Layout
     layout(location = 0) out v4 out_color;
 };
 
-v3 cube_vertex(u32 vertex_id)
-{
-    u32 b = 1 << vertex_id;
-    return v3((0x287A & b) != 0, (0x02AF & b) != 0, (0x31E3 & b) != 0);
-}
-
 geometry(DEBUG_Voxel_Visualizer_Geometry_Layout) void DEBUG_voxel_visualizer_geometry_shader()
 {
     if (in_color[0].a > 0)
@@ -292,7 +283,10 @@ geometry(DEBUG_Voxel_Visualizer_Geometry_Layout) void DEBUG_voxel_visualizer_geo
             out_color = in_color[0];
 
             gl_Position.xyz = (gl_in[0].gl_Position.xyz / frame_uniforms.voxel_grid_resolution * 2 - 1) * frame_uniforms.voxel_grid_resolution;
-            gl_Position.xyz += (cube_vertex(i) - v3(0, 1, 0)) * 2;
+
+            // NOTE: Cube vertex position from index
+            gl_Position.xyz += (v3((0x287A & (1 << i)) != 0, (0x02AF & (1 << i)) != 0, (0x31E3 & (1 << i)) != 0) - v3(0, 1, 0)) * 2;
+
             gl_Position.xyz *= frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_size / frame_uniforms.voxel_grid_resolution;
             gl_Position = frame_uniforms.view_projection * v4(gl_Position.xyz + frame_uniforms.voxel_grid_origin, 1);
 

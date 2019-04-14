@@ -423,7 +423,7 @@ void __stdcall WinMainCRTStartup()
         {
             wait_for_counter(&current_frame->previous->previous->previous->gpu_counter, 0);
 
-            if (current_frame->frame_number % 1000 == 0)
+            if (current_frame->frame_number % 100 == 0)
             {
                 u64 elapsed_time = current_frame->end_time - current_frame->start_time;
                 f64 ms_per_frame = (1000.0 * elapsed_time) / performance_frequency.QuadPart;

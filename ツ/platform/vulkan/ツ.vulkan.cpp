@@ -302,8 +302,10 @@ struct Renderer
     VkImage             framebuffer_depth_attachment_image;
     VkImageView         framebuffer_depth_attachment_image_view;
 
-    Vulkan_Memory_Block voxel_storage_memory_block;
-    VkBuffer            voxel_storage_buffer;
+    Vulkan_Memory_Block voxel_image_memory_block;
+    VkImage             voxel_image;
+    VkImageView         voxel_image_view;
+    VkSampler           voxel_texture_sampler;
 
     VkFormat framebuffer_color_attachment_format;
     VkFormat framebuffer_depth_attachment_format;
@@ -505,14 +507,29 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     sampler_create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.texture_2d_sampler));
 
-    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &renderer.texture_2d_sampler};
+    sampler_create_info.magFilter = VK_FILTER_NEAREST;
+    sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_create_info.addressModeV = sampler_create_info.addressModeU;
+    sampler_create_info.addressModeW = sampler_create_info.addressModeU;
+    VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.voxel_texture_sampler));
+
+    VkCommandPoolCreateInfo command_pool_create_info = {};
+    command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    command_pool_create_info.queueFamilyIndex = vulkan_context.transfer_queue_index;
+    VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.transfer_command_pool));
+
+    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
+    VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.graphics_command_pool));
+
+    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, &renderer.texture_2d_sampler};
     VkDescriptorSetLayoutBinding texture_2d_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures, VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutBinding storage_material_layout_binding = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutBinding storage_transform_layout_binding = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT};
-    VkDescriptorSetLayoutBinding storage_voxel_data_layout_binding = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding voxel_image_layout_binding = {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding voxel_texture_layout_binding = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
 
-    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding, storage_voxel_data_layout_binding};
-    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT, 0, 0, 0};
+    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding, voxel_image_layout_binding, voxel_texture_layout_binding};
+    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT, 0, 0, 0, 0};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
     layout_binding_flags_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
@@ -546,9 +563,11 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkDescriptorPoolSize sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
     VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + MAX_FRAME_RESOURCES};
-    VkDescriptorPoolSize storage_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
+    VkDescriptorPoolSize storage_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    VkDescriptorPoolSize image_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolSize combined_image_sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
     VkDescriptorPoolSize per_frame_uniforms_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES};
-    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size, storage_descriptor_pool_size, per_frame_uniforms_descriptor_pool_size};
+    VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size, storage_descriptor_pool_size, image_descriptor_pool_size, combined_image_sampler_descriptor_pool_size, per_frame_uniforms_descriptor_pool_size};
 
     VkDescriptorPoolCreateInfo descriptor_pool_create_info = {};
     descriptor_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -723,8 +742,13 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     voxelizer_shader_stages[1].module = geometry_shader_module;
     voxelizer_shader_stages[2].module = fragment_shader_module;
 
+    VkPipelineRasterizationStateCreateInfo no_cull_rasterization_state_create_info = {};
+    no_cull_rasterization_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    no_cull_rasterization_state_create_info.cullMode = VK_CULL_MODE_NONE;
+
     pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
     pipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;
+    pipeline_create_info.pRasterizationState = &no_cull_rasterization_state_create_info;
     pipeline_create_info.pColorBlendState = NULL;
     pipeline_create_info.pDepthStencilState = NULL;
     pipeline_create_info.subpass = 0;
@@ -750,6 +774,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     pipeline_create_info.stageCount = array_count(shader_stages);
     pipeline_create_info.pStages = shader_stages;
     pipeline_create_info.pVertexInputState = &empty_vertex_input_state_create_info;
+    pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
     pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
     pipeline_create_info.pDepthStencilState = NULL;
     pipeline_create_info.layout = renderer.final_pass_pipeline_layout;
@@ -767,6 +792,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &renderer.transfer_buffer, &renderer.transfer_memory_block);
+
+    renderer.transfer_queue = {renderer.transfer_memory_block.base, renderer.transfer_memory_block.size};
 
     u64 aligned_uniforms_offset = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
     u64 aligned_frame_data_size = ((aligned_uniforms_offset + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
@@ -827,11 +854,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     renderer.mesh_buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
     renderer.textures = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Texture, renderer.max_2d_textures);
 
-    VkCommandPoolCreateInfo command_pool_create_info = {};
-    command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_create_info.queueFamilyIndex = vulkan_context.transfer_queue_index;
-    VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.transfer_command_pool));
-
     VkFenceCreateInfo fence_create_info = {};
     fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
@@ -843,11 +865,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     command_buffer_allocate_info.commandBufferCount = 1;
     VK_CALL(vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.transfer_command_buffer));
-
-    renderer.transfer_queue = {renderer.transfer_memory_block.base, renderer.transfer_memory_block.size};
-
-    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
-    VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.graphics_command_pool));
 
     command_buffer_allocate_info.commandPool = renderer.graphics_command_pool;
 
@@ -1148,23 +1165,23 @@ internal void recreate_framebuffers(u32 render_width, u32 render_height)
 
     VkSubpassDescription subpasses[] = {voxelization_subpass, main_subpass};
 
-    VkSubpassDependency dependency_0 = {};
-    dependency_0.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency_0.dstSubpass = 0;
-    dependency_0.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    dependency_0.dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    dependency_0.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    dependency_0.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    VkSubpassDependency voxelization_subpass_dependency = {};
+    voxelization_subpass_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    voxelization_subpass_dependency.dstSubpass = 0;
+    voxelization_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    voxelization_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    voxelization_subpass_dependency.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    voxelization_subpass_dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 
-    VkSubpassDependency dependency_1 = {};
-    dependency_1.srcSubpass = 0;
-    dependency_1.dstSubpass = 1;
-    dependency_1.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    dependency_1.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency_1.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    dependency_1.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkSubpassDependency main_subpass_dependency = {};
+    main_subpass_dependency.srcSubpass = 0;
+    main_subpass_dependency.dstSubpass = 1;
+    main_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    main_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    main_subpass_dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    main_subpass_dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-    VkSubpassDependency dependencies[] = {dependency_0, dependency_1};
+    VkSubpassDependency dependencies[] = {voxelization_subpass_dependency, main_subpass_dependency};
 
     VkAttachmentDescription attachment_descriptions[] = {color_attachment, depth_attachment};
     VkRenderPassCreateInfo render_pass_create_info = {};
@@ -1204,24 +1221,44 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
     renderer.voxel_grid_resolution = {voxel_grid_resolution, voxel_grid_resolution, voxel_grid_resolution};
 
     // TODO: Free current voxel grid related resources before recreating new ones!
+    // TODO: Mipmap 3d texture
     // TODO: Use dedicated allocation extension?
-    VkBufferCreateInfo buffer_create_info = {};
-    buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_create_info.size = renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z * sizeof(u32);
-    buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.voxel_storage_buffer, &renderer.voxel_storage_memory_block);
+    // TODO: Transition image layout
+    VkImageCreateInfo image_create_info = {};
+    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_create_info.imageType = VK_IMAGE_TYPE_3D;
+    image_create_info.format = VK_FORMAT_R32_UINT;
+    image_create_info.extent = {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.y, renderer.voxel_grid_resolution.z};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    allocate_vulkan_image(&image_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.voxel_image, &renderer.voxel_image_memory_block);
 
-    VkDescriptorBufferInfo voxel_grid_buffer_info = {renderer.voxel_storage_buffer, 0, renderer.voxel_storage_memory_block.size};
-    VkWriteDescriptorSet voxel_grid_storage_write = {};
-    voxel_grid_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    voxel_grid_storage_write.dstSet = renderer.static_descriptor_set;
-    voxel_grid_storage_write.dstBinding = 4;
-    voxel_grid_storage_write.descriptorCount = 1;
-    voxel_grid_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    voxel_grid_storage_write.pBufferInfo = &voxel_grid_buffer_info;
+    VkImageViewCreateInfo image_view_create_info = {};
+    image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    image_view_create_info.image = renderer.voxel_image;
+    image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    image_view_create_info.format = image_create_info.format;
+    image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image_create_info.mipLevels, 0, image_create_info.arrayLayers};
+    VK_CALL(vkCreateImageView(vulkan_context.device, &image_view_create_info, NULL, &renderer.voxel_image_view));
 
-    vkUpdateDescriptorSets(vulkan_context.device, 1, &voxel_grid_storage_write, 0, NULL);
+    VkDescriptorImageInfo image_info = {renderer.voxel_texture_sampler, renderer.voxel_image_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet image_write = {};
+    image_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    image_write.dstSet = renderer.static_descriptor_set;
+    image_write.dstBinding = 4;
+    image_write.descriptorCount = 1;
+    image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    image_write.pImageInfo = &image_info;
+
+    VkWriteDescriptorSet texture_write = image_write;
+    texture_write.dstBinding = 5;
+    texture_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
+    VkWriteDescriptorSet descriptor_writes[] = {image_write, texture_write};
+    vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
 }
 
 struct Acquire_Next_Image_Job_Data
@@ -1712,9 +1749,9 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     renderer.current_render_frame->uniforms->view_projection = frame_params->camera.projection * frame_params->camera.view;
 
     assert(renderer.voxel_grid_resolution.x == renderer.voxel_grid_resolution.y && renderer.voxel_grid_resolution.x == renderer.voxel_grid_resolution.z);
-    renderer.current_render_frame->uniforms->voxel_grid_origin = v3{0, 0, 0};//frame_params->camera.position;
+    renderer.current_render_frame->uniforms->voxel_grid_origin = frame_params->camera.position;
     renderer.current_render_frame->uniforms->voxel_grid_resolution = (f32)renderer.voxel_grid_resolution.x;
-    renderer.current_render_frame->uniforms->voxel_size = 16;
+    renderer.current_render_frame->uniforms->voxel_size = 0.1;
 }
 
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)
@@ -1731,8 +1768,7 @@ void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_co
     (*renderer.current_render_frame->draw_call_count)++;
 
     // NOTE: The vertices and indices are in the same buffer.
-    // We must use UINT32 as the index type, which is the same size as a float, otherwise we wouldn't know where the first index is! (Vertex must also only contain floats/32 bit values)
-    // We also must pad the mesh's size (vertices + indices) to be a multiple of sizeof(Vertex) otherwise we wouldn't know what the correct vertex offset is!
+    // We must pad the mesh's size (vertices + indices) to be a multiple of sizeof(Vertex) otherwise we wouldn't know what the correct vertex offset is!
     // We can get rid of this limitation if we separate the vertex and index buffer.
     VkDrawIndexedIndirectCommand* draw_command = (VkDrawIndexedIndirectCommand*)memory_arena_reserve(&renderer.current_render_frame->draw_command_arena, sizeof(VkDrawIndexedIndirectCommand));
     draw_command->indexCount = index_count;
@@ -1792,6 +1828,11 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
 
+        // TODO: Transition voxel texture layout to VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL for the clear and then transition to VK_IMAGE_LAYOUT_GENERAL
+        VkClearColorValue voxel_texture_clear_value = {};
+        VkImageSubresourceRange voxel_texture_subresource_range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(frame_resources->graphics_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_GENERAL, &voxel_texture_clear_value, 1, &voxel_texture_subresource_range);
+
         VkClearValue clear_values[2] = {};
         clear_values[0].color = {0.07f, 0.07f, 0.07f, 1.0f};
         clear_values[1].depthStencil = {0.0f, 0};
@@ -1833,7 +1874,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
             // NOTE: Main subpass
             {
-                VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
+                VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
                 vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
                 VkRect2D scissor = render_pass_begin_info.renderArea;
@@ -1865,7 +1906,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);
             vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline_layout, 0, 1, &frame_resources->final_pass_descriptor_set, 0, NULL);
 
-            VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0.0f, 1.0f};
+            VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
             vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
             VkRect2D scissor = render_pass_begin_info.renderArea;
