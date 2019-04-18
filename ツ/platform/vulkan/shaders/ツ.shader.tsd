@@ -47,6 +47,18 @@ struct Frame_Uniforms
     f32 voxel_size;
 };
 
+u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
+{
+    return (index_3d.z * dimension.x * dimension.y) + (index_3d.y * dimension.x) + index_3d.x;
+}
+
+uv3 index_1d_to_index_3d(u32 index, uv3 dimension)
+{
+    u32 z = index / (dimension.x * dimension.y);
+    index -= (z * dimension.x * dimension.y);
+    return uv3(index % dimension.x, index / dimension.y, z);
+}
+
 u32 encode_v4_color_as_u32(v4 color)
 {
     // TODO: Tune this value
@@ -219,7 +231,7 @@ layout Voxelizer_Fragment_Layout
     layout(set = 0, binding = 1) uniform texture2D textures_2d[];
     layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
     layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 0, binding = 4, rgba8) uniform image3D voxel_texture;
+    layout(set = 0, binding = 4) buffer voxel_buffer { Voxel_Data voxels[]; };
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) flat in uv2 in_instance_data;
@@ -235,18 +247,43 @@ fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
     {
         Material material = materials[in_instance_data.y];
         v4 color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
-        //u32 encoded_color = encode_v4_color_as_u32(color);
+        u32 encoded_color = encode_v4_color_as_u32(color);
 
-        //imageAtomicMax(voxel_texture, sv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), encoded_color);
-
-        // TODO: Need to fix the flickering. Either do an extra pass where we copy from an int color into the float color or try to do atomic store with floats.
-        imageStore(voxel_texture, sv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), color);
+        u32 index = index_3d_to_index_1d(uv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), uv3(frame_uniforms.voxel_grid_resolution));
+        atomicMax(voxels[index].color, encoded_color);
     }
+}
+
+layout Voxelizer_Compute_Layout
+{
+    layout (local_size_x = 256) in;
+
+    layout(set = 0, binding = 4) buffer voxel_buffer { Voxel_Data voxels[]; };
+    layout(set = 0, binding = 5, rgba8) uniform image3D voxel_texture;
+    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+};
+
+compute(Voxelizer_Compute_Layout) void voxelizer_compute_shader()
+{
+    uv3 uvw = index_1d_to_index_3d(gl_GlobalInvocationID.x, uv3(frame_uniforms.voxel_grid_resolution));
+    v4 color = decode_u32_color_as_v4(voxels[gl_GlobalInvocationID.x].color);
+
+    if (color.a > 0)
+    {
+        // TODO: Smooth from prevous data if the voxel grid origin moved?
+        imageStore(voxel_texture, sv3(uvw), color);
+    }
+    else
+    {
+        imageStore(voxel_texture, sv3(uvw), v4(0));
+    }
+
+    voxels[gl_GlobalInvocationID.x].color = 0;
 }
 
 layout DEBUG_Voxel_Visualizer_Vertex_Layout
 {
-    layout(set = 0, binding = 5) uniform sampler3D voxel_texture;
+    layout(set = 0, binding = 6) uniform sampler3D voxel_texture;
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) out v4 out_color;
@@ -254,15 +291,9 @@ layout DEBUG_Voxel_Visualizer_Vertex_Layout
 
 vertex(DEBUG_Voxel_Visualizer_Vertex_Layout) void DEBUG_voxel_visualizer_vertex_shader()
 {
-    // NOTE: Convert 1d index to 3d index
-    u32 index = gl_VertexIndex;
-    u32 z = index / u32(frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_grid_resolution);
-    index -= (z * u32(frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_grid_resolution));
-    uv3 uvw = uv3(index % u32(frame_uniforms.voxel_grid_resolution), index / u32(frame_uniforms.voxel_grid_resolution), z);
-
+    uv3 uvw = index_1d_to_index_3d(gl_VertexIndex, uv3(frame_uniforms.voxel_grid_resolution));
     gl_Position = v4(uvw, 1);
 
-    // out_color = decode_u32_color_as_v4(textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0).r);
     out_color = textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0);
 }
 

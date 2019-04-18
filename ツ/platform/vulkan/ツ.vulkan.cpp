@@ -34,8 +34,8 @@ struct Vulkan_Context
     VkPhysicalDeviceFeatures         physical_device_features;
     VkPhysicalDeviceMemoryProperties physical_device_memory_properties;
 
-    VkQueue graphics_queue;
-    u32     graphics_queue_index;
+    VkQueue graphics_compute_queue;
+    u32     graphics_compute_queue_index;
 
     VkQueue present_queue;
     u32     present_queue_index;
@@ -232,8 +232,8 @@ struct Frame_Uniforms
 
 struct Frame_Resources
 {
-    VkCommandBuffer graphics_command_buffer;
-    VkFence         graphics_command_buffer_fence;
+    VkCommandBuffer graphics_compute_command_buffer;
+    VkFence         graphics_compute_command_buffer_fence;
     b32             should_record_command_buffer;
 
     VkSemaphore image_available_semaphore;
@@ -271,6 +271,7 @@ struct Renderer
     VkPipelineLayout pipeline_layout;
     VkPipeline       pipeline;
     VkPipeline       voxelizer_pipeline;
+    VkPipeline       voxelizer_compute_pipeline;
     VkPipelineLayout final_pass_pipeline_layout;
     VkPipeline       final_pass_pipeline;
     VkCommandPool    graphics_command_pool;
@@ -302,6 +303,8 @@ struct Renderer
     VkImage             framebuffer_depth_attachment_image;
     VkImageView         framebuffer_depth_attachment_image_view;
 
+    Vulkan_Memory_Block voxel_storage_memory_block;
+    VkBuffer            voxel_storage_buffer;
     Vulkan_Memory_Block voxel_image_memory_block;
     VkImage             voxel_image;
     VkImageView         voxel_image_view;
@@ -385,15 +388,15 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkGetPhysicalDeviceQueueFamilyProperties(vulkan_context.physical_device, &queue_family_count, queue_properties);
 
     b32 separate_transfer_queue = true;
-    vulkan_context.graphics_queue_index = U32_MAX;
+    vulkan_context.graphics_compute_queue_index = U32_MAX;
     vulkan_context.present_queue_index = U32_MAX;
     vulkan_context.transfer_queue_index = U32_MAX;
 
     for (u32 i = 0; i < queue_family_count; ++i)
     {
-        if (vulkan_context.graphics_queue_index == U32_MAX && queue_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && queue_properties[i].queueCount > 0)
+        if (vulkan_context.graphics_compute_queue_index == U32_MAX && (queue_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (queue_properties[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && queue_properties[i].queueCount > 0)
         {
-            vulkan_context.graphics_queue_index = i;
+            vulkan_context.graphics_compute_queue_index = i;
         }
 
         b32 has_present_support = false;
@@ -405,12 +408,12 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
         if (vulkan_context.transfer_queue_index == U32_MAX &&
             queue_properties[i].queueFlags & VK_QUEUE_TRANSFER_BIT &&
-            (((vulkan_context.graphics_queue_index == i || vulkan_context.present_queue_index == i) && queue_properties[i].queueCount > 1) || queue_properties[i].queueCount > 0))
+            (((vulkan_context.graphics_compute_queue_index == i || vulkan_context.present_queue_index == i) && queue_properties[i].queueCount > 1) || queue_properties[i].queueCount > 0))
         {
             vulkan_context.transfer_queue_index = i;
         }
 
-        if (vulkan_context.graphics_queue_index != U32_MAX && vulkan_context.present_queue_index != U32_MAX && vulkan_context.transfer_queue_index != U32_MAX)
+        if (vulkan_context.graphics_compute_queue_index != U32_MAX && vulkan_context.present_queue_index != U32_MAX && vulkan_context.transfer_queue_index != U32_MAX)
         {
             break;
         }
@@ -421,9 +424,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     if (vulkan_context.transfer_queue_index == U32_MAX)
     {
         separate_transfer_queue = false;
-        vulkan_context.transfer_queue_index = vulkan_context.graphics_queue_index;
+        vulkan_context.transfer_queue_index = vulkan_context.graphics_compute_queue_index;
     }
-    assert(vulkan_context.graphics_queue_index != U32_MAX && vulkan_context.present_queue_index != U32_MAX);
+    assert(vulkan_context.graphics_compute_queue_index != U32_MAX && vulkan_context.present_queue_index != U32_MAX);
 
     u32 queue_info_count = 1;
     f32 queue_priorities[] = {1.0f, 1.0f};
@@ -431,21 +434,21 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkDeviceQueueCreateInfo queue_create_info = {};
     queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
-    queue_create_info.queueCount = vulkan_context.graphics_queue_index == vulkan_context.transfer_queue_index ? 2 : 1;
+    queue_create_info.queueFamilyIndex = vulkan_context.graphics_compute_queue_index;
+    queue_create_info.queueCount = vulkan_context.graphics_compute_queue_index == vulkan_context.transfer_queue_index ? 2 : 1;
     queue_create_info.pQueuePriorities = &queue_priorities[0];
     queue_create_infos[0] = queue_create_info;
 
     // NOTE: If the present queue is different from the graphics queue we need to handle submitting a frame a little differently.
     // Most likely the present queue and graphics queue will be the same.
-    if (vulkan_context.present_queue_index != vulkan_context.graphics_queue_index)
+    if (vulkan_context.present_queue_index != vulkan_context.graphics_compute_queue_index)
     {
         queue_create_info.queueFamilyIndex = vulkan_context.present_queue_index;
         queue_create_info.queueCount = vulkan_context.present_queue_index == vulkan_context.transfer_queue_index ? 2 : 1;
         queue_create_infos[queue_info_count++] = queue_create_info;
     }
 
-    if (vulkan_context.transfer_queue_index != vulkan_context.graphics_queue_index && vulkan_context.transfer_queue_index != vulkan_context.present_queue_index)
+    if (vulkan_context.transfer_queue_index != vulkan_context.graphics_compute_queue_index && vulkan_context.transfer_queue_index != vulkan_context.present_queue_index)
     {
         queue_create_info.queueFamilyIndex = vulkan_context.transfer_queue_index;
         queue_create_info.queueCount = 1;
@@ -488,9 +491,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         VK_FUNCTIONS_DEVICE
     #undef VK_FUNCTION
 
-    vkGetDeviceQueue(vulkan_context.device, vulkan_context.graphics_queue_index, 0, &vulkan_context.graphics_queue);
+    vkGetDeviceQueue(vulkan_context.device, vulkan_context.graphics_compute_queue_index, 0, &vulkan_context.graphics_compute_queue);
     vkGetDeviceQueue(vulkan_context.device, vulkan_context.present_queue_index, 0, &vulkan_context.present_queue);
-    vkGetDeviceQueue(vulkan_context.device, vulkan_context.transfer_queue_index, (vulkan_context.transfer_queue_index == vulkan_context.graphics_queue_index || vulkan_context.transfer_queue_index == vulkan_context.present_queue_index) && separate_transfer_queue ? 1 : 0, &vulkan_context.transfer_queue);
+    vkGetDeviceQueue(vulkan_context.device, vulkan_context.transfer_queue_index, (vulkan_context.transfer_queue_index == vulkan_context.graphics_compute_queue_index || vulkan_context.transfer_queue_index == vulkan_context.present_queue_index) && separate_transfer_queue ? 1 : 0, &vulkan_context.transfer_queue);
 
     recreate_swapchain(window_width, window_height);
 
@@ -521,18 +524,19 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     command_pool_create_info.queueFamilyIndex = vulkan_context.transfer_queue_index;
     VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.transfer_command_pool));
 
-    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_queue_index;
+    command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_compute_queue_index;
     VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.graphics_command_pool));
 
-    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, &renderer.texture_2d_sampler};
+    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &renderer.texture_2d_sampler};
     VkDescriptorSetLayoutBinding texture_2d_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures, VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutBinding storage_material_layout_binding = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutBinding storage_transform_layout_binding = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT};
-    VkDescriptorSetLayoutBinding voxel_image_layout_binding = {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
-    VkDescriptorSetLayoutBinding voxel_texture_layout_binding = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding voxel_storage_layout_binding = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding voxel_image_layout_binding = {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding voxel_texture_layout_binding = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
 
-    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding, voxel_image_layout_binding, voxel_texture_layout_binding};
-    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT, 0, 0, 0, 0};
+    VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding, voxel_storage_layout_binding, voxel_image_layout_binding, voxel_texture_layout_binding};
+    VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT, 0, 0, 0, 0, 0};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
     layout_binding_flags_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
@@ -546,7 +550,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     static_layout_create_info.pBindings = static_layout_bindings;
     VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &static_layout_create_info, NULL, &renderer.static_descriptor_set_layout));
 
-    VkDescriptorSetLayoutBinding per_frame_uniforms_layout_binding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT};
+    VkDescriptorSetLayoutBinding per_frame_uniforms_layout_binding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding per_frame_layout_bindings[] = {per_frame_uniforms_layout_binding};
 
     VkDescriptorSetLayoutCreateInfo per_frame_layout_create_info = {};
@@ -566,7 +570,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkDescriptorPoolSize sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
     VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + MAX_FRAME_RESOURCES};
-    VkDescriptorPoolSize storage_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    VkDescriptorPoolSize storage_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
     VkDescriptorPoolSize image_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
     VkDescriptorPoolSize combined_image_sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
     VkDescriptorPoolSize per_frame_uniforms_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES};
@@ -790,6 +794,25 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     vkDestroyShaderModule(vulkan_context.device, vertex_shader_module, NULL);
     vkDestroyShaderModule(vulkan_context.device, fragment_shader_module, NULL);
 
+    VkShaderModule compute_shader_module;
+    VK_CALL(vkCreateShaderModule(vulkan_context.device, &voxelizer_compute_shader_create_info, NULL, &compute_shader_module));
+
+    VkPipelineShaderStageCreateInfo compute_stage_create_info = {};
+    compute_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    compute_stage_create_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    compute_stage_create_info.module = compute_shader_module;
+    compute_stage_create_info.pName = "main";
+
+    VkComputePipelineCreateInfo voxelizer_compute_pipeline_create_info = {};
+    voxelizer_compute_pipeline_create_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    voxelizer_compute_pipeline_create_info.stage = compute_stage_create_info;
+    voxelizer_compute_pipeline_create_info.layout = renderer.pipeline_layout;
+
+    // NOTE: Ignoring pipeline cache for now
+    VK_CALL(vkCreateComputePipelines(vulkan_context.device, NULL, 1, &voxelizer_compute_pipeline_create_info, NULL, &renderer.voxelizer_compute_pipeline));
+
+    vkDestroyShaderModule(vulkan_context.device, compute_shader_module, NULL);
+
     VkBufferCreateInfo buffer_create_info = {};
     buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_create_info.size = TRANSFER_MEMORY_SIZE;
@@ -879,8 +902,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     {
         VK_CALL(vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].image_available_semaphore));
         VK_CALL(vkCreateSemaphore(vulkan_context.device, &semaphore_create_info, NULL, &renderer.frame_resources[i].render_finished_semaphore));
-        VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_command_buffer_fence));
-        VK_CALL(vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].graphics_command_buffer));
+        VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_compute_command_buffer_fence));
+        VK_CALL(vkAllocateCommandBuffers(vulkan_context.device, &command_buffer_allocate_info, &renderer.frame_resources[i].graphics_compute_command_buffer));
 
         renderer.frame_resources[i].should_record_command_buffer = true;
 
@@ -1240,6 +1263,13 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
 
     // TODO: Free current voxel grid related resources before recreating new ones!
     // TODO: Use dedicated allocation extension?
+    VkBufferCreateInfo buffer_create_info = {};
+    buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_create_info.size = renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z * sizeof(u32);
+    buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.voxel_storage_buffer, &renderer.voxel_storage_memory_block);
+
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.imageType = VK_IMAGE_TYPE_3D;
@@ -1260,20 +1290,27 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
     image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image_create_info.mipLevels, 0, image_create_info.arrayLayers};
     VK_CALL(vkCreateImageView(vulkan_context.device, &image_view_create_info, NULL, &renderer.voxel_image_view));
 
-    VkDescriptorImageInfo image_info = {renderer.voxel_texture_sampler, renderer.voxel_image_view, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet image_write = {};
-    image_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    image_write.dstSet = renderer.static_descriptor_set;
-    image_write.dstBinding = 4;
-    image_write.descriptorCount = 1;
-    image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    image_write.pImageInfo = &image_info;
+    VkDescriptorBufferInfo voxel_grid_buffer_info = {renderer.voxel_storage_buffer, 0, renderer.voxel_storage_memory_block.size};
+    VkWriteDescriptorSet voxel_grid_storage_write = {};
+    voxel_grid_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    voxel_grid_storage_write.dstSet = renderer.static_descriptor_set;
+    voxel_grid_storage_write.dstBinding = 4;
+    voxel_grid_storage_write.descriptorCount = 1;
+    voxel_grid_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    voxel_grid_storage_write.pBufferInfo = &voxel_grid_buffer_info;
 
-    VkWriteDescriptorSet texture_write = image_write;
-    texture_write.dstBinding = 5;
-    texture_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    VkDescriptorImageInfo voxel_grid_image_info = {renderer.voxel_texture_sampler, renderer.voxel_image_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet voxel_grid_image_write = voxel_grid_storage_write;
+    voxel_grid_image_write.dstBinding = 5;
+    voxel_grid_image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    voxel_grid_image_write.pImageInfo = &voxel_grid_image_info;
+    voxel_grid_image_write.pBufferInfo = NULL;
 
-    VkWriteDescriptorSet descriptor_writes[] = {image_write, texture_write};
+    VkWriteDescriptorSet voxel_texture_write = voxel_grid_image_write;
+    voxel_texture_write.dstBinding = 6;
+    voxel_texture_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
+    VkWriteDescriptorSet descriptor_writes[] = {voxel_grid_storage_write, voxel_grid_image_write, voxel_texture_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
 }
 
@@ -1660,7 +1697,7 @@ internal void resolve_pending_transfer_operations()
                     buffer_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                     buffer_barriers[i].dstAccessMask = 0;
                     buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
-                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_compute_queue_index;
                     buffer_barriers[i].buffer = renderer.mesh_buffer;
                     buffer_barriers[i].offset = mesh_buffer_copies[i].dstOffset;
                     buffer_barriers[i].size = mesh_buffer_copies[i].size;
@@ -1672,7 +1709,7 @@ internal void resolve_pending_transfer_operations()
                     buffer_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                     buffer_barriers[i].dstAccessMask = 0;
                     buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
-                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_compute_queue_index;
                     buffer_barriers[i].buffer = renderer.storage_buffer;
                     buffer_barriers[i].offset = material_copies[i - mesh_copy_count].dstOffset;
                     buffer_barriers[i].size = material_copies[i - mesh_copy_count].size;
@@ -1684,7 +1721,7 @@ internal void resolve_pending_transfer_operations()
                     buffer_barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                     buffer_barriers[i].dstAccessMask = 0;
                     buffer_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
-                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    buffer_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_compute_queue_index;
                     buffer_barriers[i].buffer = renderer.storage_buffer;
                     buffer_barriers[i].offset = xform_copies[i - mesh_copy_count - material_copy_count].dstOffset;
                     buffer_barriers[i].size = xform_copies[i - mesh_copy_count - material_copy_count].size;
@@ -1708,7 +1745,7 @@ internal void resolve_pending_transfer_operations()
                     texture_barriers[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                     texture_barriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     texture_barriers[i].srcQueueFamilyIndex = vulkan_context.transfer_queue_index;
-                    texture_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_queue_index;
+                    texture_barriers[i].dstQueueFamilyIndex = vulkan_context.graphics_compute_queue_index;
                 }
             }
 
@@ -1834,53 +1871,29 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     // TODO: Is this the best place to resolve the transfer operations?
     resolve_pending_transfer_operations();
 
-    wait_for_fences(&frame_resources->graphics_command_buffer_fence, 1);
-    vkResetFences(vulkan_context.device, 1, &frame_resources->graphics_command_buffer_fence);
+    wait_for_fences(&frame_resources->graphics_compute_command_buffer_fence, 1);
+    vkResetFences(vulkan_context.device, 1, &frame_resources->graphics_compute_command_buffer_fence);
 
     if (frame_resources->should_record_command_buffer)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {};
         command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-        VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
-
-        sv3 voxel_grid_resolution = {(s32)renderer.voxel_grid_resolution.x, (s32)renderer.voxel_grid_resolution.y, (s32)renderer.voxel_grid_resolution.z};
-        u32 voxel_texture_mipmap_count = most_significant_bit_index(max(max(voxel_grid_resolution.x, voxel_grid_resolution.y), voxel_grid_resolution.z)) + 1;
-
-        VkImageMemoryBarrier voxel_image_barrier = {};
-        voxel_image_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        voxel_image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        voxel_image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        voxel_image_barrier.image = renderer.voxel_image;
-        voxel_image_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, voxel_texture_mipmap_count, 0, 1};
-
-        voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        voxel_image_barrier.srcAccessMask = 0;
-        voxel_image_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
-
-        VkClearColorValue voxel_texture_clear_value = {};
-        vkCmdClearColorImage(frame_resources->graphics_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &voxel_texture_clear_value, 1, &voxel_image_barrier.subresourceRange);
-
-        voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        voxel_image_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+        VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_compute_command_buffer, &command_buffer_begin_info));
 
         VkClearValue clear_values[2] = {};
         clear_values[0].color = {0.07f, 0.07f, 0.07f, 1.0f};
         clear_values[1].depthStencil = {0.0f, 0};
 
         VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set};
-        vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
+        vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
+        vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
         VkDeviceSize offsets[] = {frame_resources->draw_instance_offset, 0};
         VkBuffer buffers[] = {renderer.frame_resources_buffer, renderer.mesh_buffer};
 
-        vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, array_count(buffers), buffers, offsets);
-        vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(frame_resources->graphics_compute_command_buffer, 0, array_count(buffers), buffers, offsets);
+        vkCmdBindIndexBuffer(frame_resources->graphics_compute_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
 
         VkRenderPassBeginInfo render_pass_begin_info = {};
         render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1891,29 +1904,58 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             render_pass_begin_info.framebuffer = renderer.voxelization_pass_framebuffer;
             render_pass_begin_info.renderArea.offset = {0, 0};
             render_pass_begin_info.renderArea.extent = {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.x};
-            vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
-            vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.voxelizer_pipeline);
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.voxelizer_pipeline);
 
             VkViewport viewport = {0, 0, (f32)renderer.voxel_grid_resolution.x, (f32)renderer.voxel_grid_resolution.x, 0, 1};
-            vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
+            vkCmdSetViewport(frame_resources->graphics_compute_command_buffer, 0, 1, &viewport);
 
             VkRect2D scissor = {{0, 0}, {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.x}};
-            vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
+            vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
-            vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
 
-            vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
+            vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
         }
 
-        // NOTE: Generate mipmaps for voxel texture
         {
+            sv3 voxel_grid_resolution = {(s32)renderer.voxel_grid_resolution.x, (s32)renderer.voxel_grid_resolution.y, (s32)renderer.voxel_grid_resolution.z};
+            u32 voxel_texture_mipmap_count = most_significant_bit_index(max(max(voxel_grid_resolution.x, voxel_grid_resolution.y), voxel_grid_resolution.z)) + 1;
+
+            VkImageMemoryBarrier voxel_image_barrier = {};
+            voxel_image_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            voxel_image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            voxel_image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            voxel_image_barrier.image = renderer.voxel_image;
+            voxel_image_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, voxel_texture_mipmap_count, 0, 1};
+            voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            voxel_image_barrier.srcAccessMask = 0;
+            voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+
+            VkBufferMemoryBarrier voxel_buffer_barrier = {};
+            voxel_buffer_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            voxel_buffer_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            voxel_buffer_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            voxel_buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            voxel_buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            voxel_buffer_barrier.buffer = renderer.voxel_storage_buffer;
+            voxel_buffer_barrier.size = renderer.voxel_storage_memory_block.size;
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &voxel_buffer_barrier, 0, NULL);
+
+            // NOTE: Copy data from voxel buffer to voxel texture
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.voxelizer_compute_pipeline);
+            vkCmdDispatch(frame_resources->graphics_compute_command_buffer, (u32)(renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z) / 256, 1, 1);
+
             voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
             voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             voxel_image_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             voxel_image_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
 
+            // NOTE: Generate mipmaps for voxel texture
             for (u32 i = 1; i < voxel_texture_mipmap_count; ++i)
             {
                 voxel_image_barrier.subresourceRange.baseMipLevel = i - 1;
@@ -1922,7 +1964,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
                 voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                 voxel_image_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
                 voxel_image_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+                vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
 
                 VkImageBlit image_blit = {};
                 image_blit.srcOffsets[0] = {0, 0, 0};
@@ -1935,7 +1977,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
                 image_blit.dstOffsets[1] = {voxel_grid_resolution.x, voxel_grid_resolution.y, voxel_grid_resolution.z};
                 image_blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
 
-                vkCmdBlitImage(frame_resources->graphics_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_blit, VK_FILTER_LINEAR);
+                vkCmdBlitImage(frame_resources->graphics_compute_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_blit, VK_FILTER_LINEAR);
             }
 
             // NOTE: Transition the image layout of the last mipmap separately since after the blits it has a different layout than the other mip levels
@@ -1945,7 +1987,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
             voxel_image_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
 
             // NOTE: Transition the image layouts of the rest of the mip levels
             voxel_image_barrier.subresourceRange.baseMipLevel = 0;
@@ -1954,7 +1996,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
             voxel_image_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
             voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
         }
 
         // NOTE: Main render pass
@@ -1965,26 +2007,26 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             render_pass_begin_info.renderArea.extent = {renderer.render_width, renderer.render_height};
             render_pass_begin_info.clearValueCount = array_count(clear_values);
             render_pass_begin_info.pClearValues = clear_values;
-            vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
             VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
-            vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
+            vkCmdSetViewport(frame_resources->graphics_compute_command_buffer, 0, 1, &viewport);
 
             VkRect2D scissor = render_pass_begin_info.renderArea;
-            vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
+            vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
             if (renderer.draw_debug_voxel_grid)
             {
-                vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
-                vkCmdDraw(frame_resources->graphics_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
+                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
+                vkCmdDraw(frame_resources->graphics_compute_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
             }
             else
             {
-                vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
-                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
+                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
             }
 
-            vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
+            vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
         }
 
         // NOTE: Blit to swapchain render pass
@@ -1995,21 +2037,21 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             // NOTE: Setting the render pass's render area like this means we can't control the aspect ratio 'bars' with the clear color (they will always be black)
             render_pass_begin_info.renderArea = aspect_ratio_corrected_render_area(renderer.render_width, renderer.render_height, vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
 
-            vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);
-            vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline_layout, 0, 1, &frame_resources->final_pass_descriptor_set, 0, NULL);
+            vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);
+            vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline_layout, 0, 1, &frame_resources->final_pass_descriptor_set, 0, NULL);
 
             VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
-            vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
+            vkCmdSetViewport(frame_resources->graphics_compute_command_buffer, 0, 1, &viewport);
 
             VkRect2D scissor = render_pass_begin_info.renderArea;
-            vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
+            vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
-            vkCmdDraw(frame_resources->graphics_command_buffer, 3, 1, 0, 0);
-            vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
+            vkCmdDraw(frame_resources->graphics_compute_command_buffer, 3, 1, 0, 0);
+            vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
         }
 
-        VK_CALL(vkEndCommandBuffer(frame_resources->graphics_command_buffer));
+        VK_CALL(vkEndCommandBuffer(frame_resources->graphics_compute_command_buffer));
 
         frame_resources->should_record_command_buffer = false;
     }
@@ -2033,10 +2075,10 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
     submit_info.pWaitSemaphores = &frame_resources->image_available_semaphore;
     submit_info.pWaitDstStageMask = &wait_stage;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &frame_resources->graphics_command_buffer;
+    submit_info.pCommandBuffers = &frame_resources->graphics_compute_command_buffer;
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &frame_resources->render_finished_semaphore;
-    VK_CALL(vkQueueSubmit(vulkan_context.graphics_queue, 1, &submit_info, frame_resources->graphics_command_buffer_fence));
+    VK_CALL(vkQueueSubmit(vulkan_context.graphics_compute_queue, 1, &submit_info, frame_resources->graphics_compute_command_buffer_fence));
 
     VkPresentInfoKHR present_info = {};
     present_info.waitSemaphoreCount = 1;
@@ -2072,8 +2114,8 @@ void renderer_resize(u32 window_width, u32 window_height)
         VkFenceCreateInfo fence_create_info = {};
         fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        vkDestroyFence(vulkan_context.device, renderer.frame_resources[i].graphics_command_buffer_fence, NULL);
-        VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_command_buffer_fence));
+        vkDestroyFence(vulkan_context.device, renderer.frame_resources[i].graphics_compute_command_buffer_fence, NULL);
+        VK_CALL(vkCreateFence(vulkan_context.device, &fence_create_info, NULL, &renderer.frame_resources[i].graphics_compute_command_buffer_fence));
 
         renderer.frame_resources[i].should_record_command_buffer = true;
     }
