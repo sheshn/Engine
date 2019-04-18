@@ -24,9 +24,11 @@ internal f32 sqrt(f32 x)
 }
 
 // TODO: Choose better approximations for sin, cos and tan?
-// NOTE: This approximation is only valid from -π to π
 internal f32 sin(f32 angle)
 {
+    // NOTE: This approximation is only valid from -π to π
+    angle = angle - (u32)(angle / PI) * PI;
+
     f32 a2 = angle * angle;
     return angle + (angle * a2) * (-0.16612511580269618f + a2 * (8.0394356072977748e-3f + a2 * -1.49414020045938777495e-4f));
 }
@@ -282,6 +284,15 @@ internal v3& operator*=(v3& left, quat right)
     return left;
 }
 
+internal m4x4 operator*(f32 left, m4x4 right)
+{
+    for (u64 i = 0; i < 16; ++i)
+    {
+        right.data[i] *= left;
+    }
+    return right;
+}
+
 internal m4x4 operator*(m4x4 left, m4x4 right)
 {
     m4x4 result = {};
@@ -414,6 +425,64 @@ internal m4x4 scale(m4x4 m, f32 scale)
     return result;
 }
 
+internal m4x4 inverse(m4x4 m)
+{
+    f32 coef_00 = m.columns[2].data[2] * m.columns[3].data[3] - m.columns[3].data[2] * m.columns[2].data[3];
+    f32 coef_02 = m.columns[1].data[2] * m.columns[3].data[3] - m.columns[3].data[2] * m.columns[1].data[3];
+    f32 coef_03 = m.columns[1].data[2] * m.columns[2].data[3] - m.columns[2].data[2] * m.columns[1].data[3];
+
+    f32 coef_04 = m.columns[2].data[1] * m.columns[3].data[3] - m.columns[3].data[1] * m.columns[2].data[3];
+    f32 coef_06 = m.columns[1].data[1] * m.columns[3].data[3] - m.columns[3].data[1] * m.columns[1].data[3];
+    f32 coef_07 = m.columns[1].data[1] * m.columns[2].data[3] - m.columns[2].data[1] * m.columns[1].data[3];
+
+    f32 coef_08 = m.columns[2].data[1] * m.columns[3].data[2] - m.columns[3].data[1] * m.columns[2].data[2];
+    f32 coef_10 = m.columns[1].data[1] * m.columns[3].data[2] - m.columns[3].data[1] * m.columns[1].data[2];
+    f32 coef_11 = m.columns[1].data[1] * m.columns[2].data[2] - m.columns[2].data[1] * m.columns[1].data[2];
+
+    f32 coef_12 = m.columns[2].data[0] * m.columns[3].data[3] - m.columns[3].data[0] * m.columns[2].data[3];
+    f32 coef_14 = m.columns[1].data[0] * m.columns[3].data[3] - m.columns[3].data[0] * m.columns[1].data[3];
+    f32 coef_15 = m.columns[1].data[0] * m.columns[2].data[3] - m.columns[2].data[0] * m.columns[1].data[3];
+
+    f32 coef_16 = m.columns[2].data[0] * m.columns[3].data[2] - m.columns[3].data[0] * m.columns[2].data[2];
+    f32 coef_18 = m.columns[1].data[0] * m.columns[3].data[2] - m.columns[3].data[0] * m.columns[1].data[2];
+    f32 coef_19 = m.columns[1].data[0] * m.columns[2].data[2] - m.columns[2].data[0] * m.columns[1].data[2];
+
+    f32 coef_20 = m.columns[2].data[0] * m.columns[3].data[1] - m.columns[3].data[0] * m.columns[2].data[1];
+    f32 coef_22 = m.columns[1].data[0] * m.columns[3].data[1] - m.columns[3].data[0] * m.columns[1].data[1];
+    f32 coef_23 = m.columns[1].data[0] * m.columns[2].data[1] - m.columns[2].data[0] * m.columns[1].data[1];
+
+    v4 fac_0 = {coef_00, coef_00, coef_02, coef_03};
+    v4 fac_1 = {coef_04, coef_04, coef_06, coef_07};
+    v4 fac_2 = {coef_08, coef_08, coef_10, coef_11};
+    v4 fac_3 = {coef_12, coef_12, coef_14, coef_15};
+    v4 fac_4 = {coef_16, coef_16, coef_18, coef_19};
+    v4 fac_5 = {coef_20, coef_20, coef_22, coef_23};
+
+    v4 vec_0 = {m.columns[1].data[0], m.columns[0].data[0], m.columns[0].data[0], m.columns[0].data[0]};
+    v4 vec_1 = {m.columns[1].data[1], m.columns[0].data[1], m.columns[0].data[1], m.columns[0].data[1]};
+    v4 vec_2 = {m.columns[1].data[2], m.columns[0].data[2], m.columns[0].data[2], m.columns[0].data[2]};
+    v4 vec_3 = {m.columns[1].data[3], m.columns[0].data[3], m.columns[0].data[3], m.columns[0].data[3]};
+
+    v4 inv_0 = {vec_1 * fac_0 - vec_2 * fac_1 + vec_3 * fac_2};
+    v4 inv_1 = {vec_0 * fac_0 - vec_2 * fac_3 + vec_3 * fac_4};
+    v4 inv_2 = {vec_0 * fac_1 - vec_1 * fac_3 + vec_3 * fac_5};
+    v4 inv_3 = {vec_0 * fac_2 - vec_1 * fac_4 + vec_2 * fac_5};
+
+    v4 sign_a = {+1, -1, +1, -1};
+    v4 sign_b = {-1, +1, -1, +1};
+
+    m4x4 inverse;
+    inverse.columns[0] = inv_0 * sign_a;
+    inverse.columns[1] = inv_1 * sign_b;
+    inverse.columns[2] = inv_2 * sign_a;
+    inverse.columns[3] = inv_3 * sign_b;
+
+    v4 row_0 = {inverse.columns[0].data[0], inverse.columns[1].data[0], inverse.columns[2].data[0], inverse.columns[3].data[0]};
+    v4 dot_0 = m.columns[0] * row_0;
+    f32 dot_1 = (dot_0.x + dot_0.y) + (dot_0.z + dot_0.w);
+    return (1 / dot_1) * inverse;
+}
+
 internal quat axis_angle(v3 axis, f32 angle)
 {
     f32 a = angle * 0.5f;
@@ -459,4 +528,24 @@ internal m4x4 quat_to_m4x4(quat q)
 
     result.columns[3].data[3] = 1;
     return result;
+}
+
+internal f32 lerp(f32 a, f32 b, f32 t)
+{
+    return a + t * (b - a);
+}
+
+internal v2 lerp(v2 a, v2 b, f32 t)
+{
+    return a + t * (b - a);
+}
+
+internal v3 lerp(v3 a, v3 b, f32 t)
+{
+    return a + t * (b - a);
+}
+
+internal v4 lerp(v4 a, v4 b, f32 t)
+{
+    return a + t * (b - a);
 }

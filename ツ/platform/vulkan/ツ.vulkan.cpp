@@ -323,6 +323,9 @@ struct Renderer
     VkDescriptorSet       static_descriptor_set;
 
     VkRenderPass main_render_pass;
+    VkRenderPass voxelization_render_pass;
+
+    VkFramebuffer voxelization_pass_framebuffer;
 
     u32 render_width;
     u32 render_height;
@@ -697,7 +700,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     pipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;
     pipeline_create_info.layout = renderer.pipeline_layout;
     pipeline_create_info.renderPass = renderer.main_render_pass;
-    pipeline_create_info.subpass = 1;
+    pipeline_create_info.subpass = 0;
 
     // NOTE: Ignoring pipeline cache for now
     VK_CALL(vkCreateGraphicsPipelines(vulkan_context.device, NULL, 1, &pipeline_create_info, NULL, &renderer.pipeline));
@@ -751,6 +754,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     pipeline_create_info.pRasterizationState = &no_cull_rasterization_state_create_info;
     pipeline_create_info.pColorBlendState = NULL;
     pipeline_create_info.pDepthStencilState = NULL;
+    pipeline_create_info.renderPass = renderer.voxelization_render_pass;
     pipeline_create_info.subpass = 0;
 
     // NOTE: Ignoring pipeline cache for now
@@ -1155,43 +1159,29 @@ internal void recreate_framebuffers(u32 render_width, u32 render_height)
     VkAttachmentReference color_attachment_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_attachment_reference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
-    VkSubpassDescription voxelization_subpass = {};
-    voxelization_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-
-    VkSubpassDescription main_subpass = voxelization_subpass;
+    VkSubpassDescription main_subpass = {};
+    main_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     main_subpass.colorAttachmentCount = 1;
     main_subpass.pColorAttachments = &color_attachment_reference;
     main_subpass.pDepthStencilAttachment = &depth_attachment_reference;
 
-    VkSubpassDescription subpasses[] = {voxelization_subpass, main_subpass};
-
-    VkSubpassDependency voxelization_subpass_dependency = {};
-    voxelization_subpass_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    voxelization_subpass_dependency.dstSubpass = 0;
-    voxelization_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    voxelization_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-    voxelization_subpass_dependency.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    voxelization_subpass_dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-
     VkSubpassDependency main_subpass_dependency = {};
-    main_subpass_dependency.srcSubpass = 0;
-    main_subpass_dependency.dstSubpass = 1;
+    main_subpass_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    main_subpass_dependency.dstSubpass = 0;
     main_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     main_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     main_subpass_dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     main_subpass_dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkSubpassDependency dependencies[] = {voxelization_subpass_dependency, main_subpass_dependency};
 
     VkAttachmentDescription attachment_descriptions[] = {color_attachment, depth_attachment};
     VkRenderPassCreateInfo render_pass_create_info = {};
     render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_create_info.attachmentCount = array_count(attachment_descriptions);
     render_pass_create_info.pAttachments = attachment_descriptions;
-    render_pass_create_info.subpassCount = array_count(subpasses);
-    render_pass_create_info.pSubpasses = subpasses;
-    render_pass_create_info.dependencyCount = array_count(dependencies);
-    render_pass_create_info.pDependencies = dependencies;
+    render_pass_create_info.subpassCount = 1;
+    render_pass_create_info.pSubpasses = &main_subpass;
+    render_pass_create_info.dependencyCount = 1;
+    render_pass_create_info.pDependencies = &main_subpass_dependency;
     VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.main_render_pass));
 
     VkFramebufferCreateInfo framebuffer_create_info = {};
@@ -1220,20 +1210,46 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
     renderer.draw_debug_voxel_grid = true;
     renderer.voxel_grid_resolution = {voxel_grid_resolution, voxel_grid_resolution, voxel_grid_resolution};
 
+    VkSubpassDescription voxelization_subpass = {};
+    voxelization_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+
+    VkSubpassDependency voxelization_subpass_dependency = {};
+    voxelization_subpass_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    voxelization_subpass_dependency.dstSubpass = 0;
+    voxelization_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    voxelization_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    voxelization_subpass_dependency.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    voxelization_subpass_dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+    VkRenderPassCreateInfo render_pass_create_info = {};
+    render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_create_info.subpassCount = 1;
+    render_pass_create_info.pSubpasses = &voxelization_subpass;
+    render_pass_create_info.dependencyCount = 1;
+    render_pass_create_info.pDependencies = &voxelization_subpass_dependency;
+    VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.voxelization_render_pass));
+
+    // NOTE: This framebuffer is needed even though we don't actually use any attachments
+    VkFramebufferCreateInfo framebuffer_create_info = {};
+    framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_create_info.renderPass = renderer.voxelization_render_pass;
+    framebuffer_create_info.width = renderer.voxel_grid_resolution.x;
+    framebuffer_create_info.height = renderer.voxel_grid_resolution.x;
+    framebuffer_create_info.layers = 1;
+    VK_CALL(vkCreateFramebuffer(vulkan_context.device, &framebuffer_create_info, NULL, &renderer.voxelization_pass_framebuffer));
+
     // TODO: Free current voxel grid related resources before recreating new ones!
-    // TODO: Mipmap 3d texture
     // TODO: Use dedicated allocation extension?
-    // TODO: Transition image layout
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.imageType = VK_IMAGE_TYPE_3D;
-    image_create_info.format = VK_FORMAT_R32_UINT;
+    image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
     image_create_info.extent = {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.y, renderer.voxel_grid_resolution.z};
-    image_create_info.mipLevels = 1;
+    image_create_info.mipLevels = most_significant_bit_index(max(max(renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.y), renderer.voxel_grid_resolution.z)) + 1;;
     image_create_info.arrayLayers = 1;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_create_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_create_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     allocate_vulkan_image(&image_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.voxel_image, &renderer.voxel_image_memory_block);
 
     VkImageViewCreateInfo image_view_create_info = {};
@@ -1828,17 +1844,120 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_command_buffer, &command_buffer_begin_info));
 
-        // TODO: Transition voxel texture layout to VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL for the clear and then transition to VK_IMAGE_LAYOUT_GENERAL
+        sv3 voxel_grid_resolution = {(s32)renderer.voxel_grid_resolution.x, (s32)renderer.voxel_grid_resolution.y, (s32)renderer.voxel_grid_resolution.z};
+        u32 voxel_texture_mipmap_count = most_significant_bit_index(max(max(voxel_grid_resolution.x, voxel_grid_resolution.y), voxel_grid_resolution.z)) + 1;
+
+        VkImageMemoryBarrier voxel_image_barrier = {};
+        voxel_image_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        voxel_image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        voxel_image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        voxel_image_barrier.image = renderer.voxel_image;
+        voxel_image_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, voxel_texture_mipmap_count, 0, 1};
+
+        voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        voxel_image_barrier.srcAccessMask = 0;
+        voxel_image_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+
         VkClearColorValue voxel_texture_clear_value = {};
-        VkImageSubresourceRange voxel_texture_subresource_range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(frame_resources->graphics_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_GENERAL, &voxel_texture_clear_value, 1, &voxel_texture_subresource_range);
+        vkCmdClearColorImage(frame_resources->graphics_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &voxel_texture_clear_value, 1, &voxel_image_barrier.subresourceRange);
+
+        voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        voxel_image_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
 
         VkClearValue clear_values[2] = {};
         clear_values[0].color = {0.07f, 0.07f, 0.07f, 1.0f};
         clear_values[1].depthStencil = {0.0f, 0};
 
+        VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set};
+        vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
+
+        VkDeviceSize offsets[] = {frame_resources->draw_instance_offset, 0};
+        VkBuffer buffers[] = {renderer.frame_resources_buffer, renderer.mesh_buffer};
+
+        vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, array_count(buffers), buffers, offsets);
+        vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
+
         VkRenderPassBeginInfo render_pass_begin_info = {};
         render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+
+        // NOTE: Voxelization render pass
+        {
+            render_pass_begin_info.renderPass = renderer.voxelization_render_pass;
+            render_pass_begin_info.framebuffer = renderer.voxelization_pass_framebuffer;
+            render_pass_begin_info.renderArea.offset = {0, 0};
+            render_pass_begin_info.renderArea.extent = {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.x};
+            vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+            vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.voxelizer_pipeline);
+
+            VkViewport viewport = {0, 0, (f32)renderer.voxel_grid_resolution.x, (f32)renderer.voxel_grid_resolution.x, 0, 1};
+            vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
+
+            VkRect2D scissor = {{0, 0}, {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.x}};
+            vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
+
+            vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+
+            vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
+        }
+
+        // NOTE: Generate mipmaps for voxel texture
+        {
+            voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            voxel_image_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            voxel_image_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+
+            for (u32 i = 1; i < voxel_texture_mipmap_count; ++i)
+            {
+                voxel_image_barrier.subresourceRange.baseMipLevel = i - 1;
+                voxel_image_barrier.subresourceRange.levelCount = 1;
+                voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                voxel_image_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                voxel_image_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+
+                VkImageBlit image_blit = {};
+                image_blit.srcOffsets[0] = {0, 0, 0};
+                image_blit.srcOffsets[1] = {voxel_grid_resolution.x, voxel_grid_resolution.y, voxel_grid_resolution.z};
+                image_blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
+
+                voxel_grid_resolution = {max(voxel_grid_resolution.x >> 1, 1), max(voxel_grid_resolution.y >> 1, 1), max(voxel_grid_resolution.z >> 1, 1)};
+
+                image_blit.dstOffsets[0] = {0, 0, 0};
+                image_blit.dstOffsets[1] = {voxel_grid_resolution.x, voxel_grid_resolution.y, voxel_grid_resolution.z};
+                image_blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+
+                vkCmdBlitImage(frame_resources->graphics_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_blit, VK_FILTER_LINEAR);
+            }
+
+            // NOTE: Transition the image layout of the last mipmap separately since after the blits it has a different layout than the other mip levels
+            voxel_image_barrier.subresourceRange.baseMipLevel = voxel_texture_mipmap_count - 1;
+            voxel_image_barrier.subresourceRange.levelCount = 1;
+            voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            voxel_image_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+
+            // NOTE: Transition the image layouts of the rest of the mip levels
+            voxel_image_barrier.subresourceRange.baseMipLevel = 0;
+            voxel_image_barrier.subresourceRange.levelCount = voxel_texture_mipmap_count - 1;
+            voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            voxel_image_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            voxel_image_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(frame_resources->graphics_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &voxel_image_barrier);
+        }
+
+        // NOTE: Main render pass
         {
             render_pass_begin_info.renderPass = renderer.main_render_pass;
             render_pass_begin_info.framebuffer = frame_resources->framebuffer;
@@ -1846,55 +1965,29 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             render_pass_begin_info.renderArea.extent = {renderer.render_width, renderer.render_height};
             render_pass_begin_info.clearValueCount = array_count(clear_values);
             render_pass_begin_info.pClearValues = clear_values;
-
             vkCmdBeginRenderPass(frame_resources->graphics_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
-            VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set};
-            vkCmdBindDescriptorSets(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
+            VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
+            vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
 
-            VkDeviceSize offsets[] = {frame_resources->draw_instance_offset, 0};
-            VkBuffer buffers[] = {renderer.frame_resources_buffer, renderer.mesh_buffer};
+            VkRect2D scissor = render_pass_begin_info.renderArea;
+            vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
 
-            vkCmdBindVertexBuffers(frame_resources->graphics_command_buffer, 0, array_count(buffers), buffers, offsets);
-            vkCmdBindIndexBuffer(frame_resources->graphics_command_buffer, renderer.mesh_buffer, 0, VK_INDEX_TYPE_UINT32);
-
-            // NOTE: Voxelization subpass
+            if (renderer.draw_debug_voxel_grid)
             {
-                vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.voxelizer_pipeline);
-
-                VkViewport viewport = {0, 0, (f32)renderer.voxel_grid_resolution.x, (f32)renderer.voxel_grid_resolution.x, 0, 1};
-                vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
-
-                VkRect2D scissor = {{0, 0}, {renderer.voxel_grid_resolution.x, renderer.voxel_grid_resolution.x}};
-                vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
-
-                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
-                vkCmdNextSubpass(frame_resources->graphics_command_buffer, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
+                vkCmdDraw(frame_resources->graphics_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
             }
-
-            // NOTE: Main subpass
+            else
             {
-                VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
-                vkCmdSetViewport(frame_resources->graphics_command_buffer, 0, 1, &viewport);
-
-                VkRect2D scissor = render_pass_begin_info.renderArea;
-                vkCmdSetScissor(frame_resources->graphics_command_buffer, 0, 1, &scissor);
-
-                if (renderer.draw_debug_voxel_grid)
-                {
-                    vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
-                    vkCmdDraw(frame_resources->graphics_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
-                }
-                else
-                {
-                    vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
-                    vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
-                }
+                vkCmdBindPipeline(frame_resources->graphics_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
+                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
             }
 
             vkCmdEndRenderPass(frame_resources->graphics_command_buffer);
         }
 
+        // NOTE: Blit to swapchain render pass
         {
             render_pass_begin_info.renderPass = vulkan_context.swapchain_render_pass;
             render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[frame_params->frame_number % MAX_FRAME_RESOURCES];

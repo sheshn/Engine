@@ -423,9 +423,11 @@ void __stdcall WinMainCRTStartup()
         {
             wait_for_counter(&current_frame->previous->previous->previous->gpu_counter, 0);
 
+            u64 elapsed_time = current_frame->end_time - current_frame->start_time;
+            current_frame->next->delta_time = (f32)elapsed_time / performance_frequency.QuadPart;
+
             if (current_frame->frame_number % 100 == 0)
             {
-                u64 elapsed_time = current_frame->end_time - current_frame->start_time;
                 f64 ms_per_frame = (1000.0 * elapsed_time) / performance_frequency.QuadPart;
                 f64 fps = performance_frequency.QuadPart / (f64)elapsed_time;
                 DEBUG_printf("ms per frame: %lu, fps: %lu\n", (u32)ms_per_frame, (u32)fps);

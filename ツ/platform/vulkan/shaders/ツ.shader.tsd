@@ -11,7 +11,7 @@
 #define v4 vec4
 #define uv2 uvec2
 #define uv3 uvec3
-#define iv3 ivec3
+#define sv3 ivec3
 #define m3x3 mat3
 #define m4x4 mat4
 
@@ -219,7 +219,7 @@ layout Voxelizer_Fragment_Layout
     layout(set = 0, binding = 1) uniform texture2D textures_2d[];
     layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
     layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 0, binding = 4, r32ui) uniform uimage3D voxel_texture;
+    layout(set = 0, binding = 4, rgba8) uniform image3D voxel_texture;
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) flat in uv2 in_instance_data;
@@ -235,15 +235,18 @@ fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
     {
         Material material = materials[in_instance_data.y];
         v4 color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
-        u32 encoded_color = encode_v4_color_as_u32(color);
+        //u32 encoded_color = encode_v4_color_as_u32(color);
 
-        imageAtomicMax(voxel_texture, iv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), encoded_color);
+        //imageAtomicMax(voxel_texture, sv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), encoded_color);
+
+        // TODO: Need to fix the flickering. Either do an extra pass where we copy from an int color into the float color or try to do atomic store with floats.
+        imageStore(voxel_texture, sv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), color);
     }
 }
 
 layout DEBUG_Voxel_Visualizer_Vertex_Layout
 {
-    layout(set = 0, binding = 5) uniform usampler3D voxel_texture;
+    layout(set = 0, binding = 5) uniform sampler3D voxel_texture;
     layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
     layout(location = 0) out v4 out_color;
@@ -259,7 +262,8 @@ vertex(DEBUG_Voxel_Visualizer_Vertex_Layout) void DEBUG_voxel_visualizer_vertex_
 
     gl_Position = v4(uvw, 1);
 
-    out_color = decode_u32_color_as_v4(textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0).r);
+    // out_color = decode_u32_color_as_v4(textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0).r);
+    out_color = textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0);
 }
 
 layout DEBUG_Voxel_Visualizer_Geometry_Layout

@@ -92,22 +92,23 @@ void game_update(Frame_Parameters* frame_params)
     }
     frame_params->camera.position = normalize(v3{0, 0, -1} * frame_params->camera.rotation) * length(target - frame_params->camera.position);
 #else
-    f32 speed = 0.05f;
+    f32 speed = 5.0f;
+    f32 rotation_speed = 20.0f;
     if (frame_params->input.button_up.is_down)
     {
-        frame_params->camera.position += v3{0, 0, 1} * frame_params->camera.rotation * speed;
+        frame_params->camera.position += v3{0, 0, 1} * frame_params->camera.rotation * speed * frame_params->delta_time;
     }
     if (frame_params->input.button_down.is_down)
     {
-        frame_params->camera.position += v3{0, 0, -1} * frame_params->camera.rotation * speed;
+        frame_params->camera.position += v3{0, 0, -1} * frame_params->camera.rotation * speed * frame_params->delta_time;
     }
     if (frame_params->input.button_left.is_down)
     {
-        frame_params->camera.position += v3{-1, 0, 0} * frame_params->camera.rotation * speed;
+        frame_params->camera.position += v3{-1, 0, 0} * frame_params->camera.rotation * speed * frame_params->delta_time;
     }
     if (frame_params->input.button_right.is_down)
     {
-        frame_params->camera.position += v3{1, 0, 0} * frame_params->camera.rotation * speed;
+        frame_params->camera.position += v3{1, 0, 0} * frame_params->camera.rotation * speed * frame_params->delta_time;
     }
 
     if (frame_params->input.mouse_button_left.is_down)
@@ -117,14 +118,16 @@ void game_update(Frame_Parameters* frame_params)
             camera_reference_frame = frame_params->camera.rotation;
             started_down = true;
         }
+
+        // TODO: Need to fix mouse_delta lag!!!
         quat reference = {0, 0, 0, 1};
         if (frame_params->input.mouse_delta.y != 0)
         {
-            reference *= normalize(axis_angle(v3{1, 0, 0} * camera_reference_frame, radians(frame_params->input.mouse_delta.y * 0.1f)));
+            reference *= normalize(axis_angle(v3{1, 0, 0} * camera_reference_frame, radians(frame_params->input.mouse_delta.y * rotation_speed) * frame_params->delta_time));
         }
         if (frame_params->input.mouse_delta.x != 0)
         {
-            reference *= normalize(axis_angle(v3{0, 1, 0} * camera_reference_frame, radians(frame_params->input.mouse_delta.x * 0.1f)));
+            reference *= normalize(axis_angle(v3{0, 1, 0} * camera_reference_frame, radians(frame_params->input.mouse_delta.x * rotation_speed) * frame_params->delta_time));
         }
         frame_params->camera.rotation = reference * frame_params->camera.rotation;
     }

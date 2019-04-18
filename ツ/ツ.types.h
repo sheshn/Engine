@@ -39,6 +39,14 @@ union uv2
     struct { u32 u, v; };
 };
 
+union sv2
+{
+    s32 data[2];
+
+    struct { s32 x, y; };
+    struct { s32 u, v; };
+};
+
 union v3
 {
     float data[3];
@@ -55,6 +63,14 @@ union uv3
     struct { u32 r, g, b; };
 };
 
+union sv3
+{
+    s32 data[3];
+
+    struct { s32 x, y, z; };
+    struct { s32 r, g, b; };
+};
+
 union v4
 {
     float data[4];
@@ -69,6 +85,14 @@ union uv4
 
     struct { u32 x, y, z, w; };
     struct { u32 r, g, b, a; };
+};
+
+union sv4
+{
+    s32 data[4];
+
+    struct { s32 x, y, z, w; };
+    struct { s32 r, g, b, a; };
 };
 
 union quat

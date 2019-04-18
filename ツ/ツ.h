@@ -47,6 +47,7 @@ struct Frame_Parameters
 
     u64 start_time;
     u64 end_time;
+    f32 delta_time;
 
     Input input;
 
