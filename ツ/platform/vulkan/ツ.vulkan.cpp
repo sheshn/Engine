@@ -241,11 +241,6 @@ struct Frame_Resources
     u32         swapchain_image_index;
 
     VkDescriptorSet uniforms_descriptor_set;
-    VkDescriptorSet final_pass_descriptor_set;
-
-    VkFramebuffer framebuffer;
-    VkImage       framebuffer_color_attachment_image;
-    VkImageView   framebuffer_color_attachment_image_view;
 
     Memory_Arena draw_command_arena;
     u32*         draw_call_count;
@@ -272,6 +267,8 @@ struct Renderer
     VkPipeline       pipeline;
     VkPipeline       voxelizer_pipeline;
     VkPipeline       voxelizer_compute_pipeline;
+    VkPipelineLayout shading_pass_pipeline_layout;
+    VkPipeline       shading_pass_compute_pipeline;
     VkPipelineLayout final_pass_pipeline_layout;
     VkPipeline       final_pass_pipeline;
     VkCommandPool    graphics_command_pool;
@@ -300,30 +297,33 @@ struct Renderer
     u64                 texture_memory_used;
 
     Vulkan_Memory_Block framebuffer_memory_block;
-    VkImage             framebuffer_depth_attachment_image;
-    VkImageView         framebuffer_depth_attachment_image_view;
+    VkFramebuffer       main_framebuffer;
+    Vulkan_Texture      gbuffer_depth_attachment;
+    Vulkan_Texture      gbuffer_uv_coordinates_attachment;
+    Vulkan_Texture      gbuffer_uv_gradients_attachment;
+    Vulkan_Texture      gbuffer_material_id_attachment;
+    Vulkan_Texture      main_color_attachment;
 
     Vulkan_Memory_Block voxel_storage_memory_block;
     VkBuffer            voxel_storage_buffer;
     Vulkan_Memory_Block voxel_image_memory_block;
-    VkImage             voxel_image;
-    VkImageView         voxel_image_view;
+    Vulkan_Texture      voxel_texture;
     VkSampler           voxel_texture_sampler;
-
-    VkFormat framebuffer_color_attachment_format;
-    VkFormat framebuffer_depth_attachment_format;
 
     VkSampler texture_2d_sampler;
     u32       max_2d_textures;
 
     Vulkan_Buffer*  mesh_buffers;
-    Vulkan_Texture* textures;
+    Vulkan_Texture* textures_2d;
 
     VkDescriptorPool      descriptor_pool;
     VkDescriptorSetLayout static_descriptor_set_layout;
     VkDescriptorSetLayout per_frame_descriptor_set_layout;
+    VkDescriptorSetLayout shading_pass_descriptor_set_layout;
     VkDescriptorSetLayout final_pass_descriptor_set_layout;
     VkDescriptorSet       static_descriptor_set;
+    VkDescriptorSet       shading_pass_descriptor_set;
+    VkDescriptorSet       final_pass_descriptor_set;
 
     VkRenderPass main_render_pass;
     VkRenderPass voxelization_render_pass;
@@ -343,7 +343,7 @@ struct Renderer
 internal Renderer renderer;
 
 internal void recreate_swapchain(u32 window_width, u32 window_height);
-internal void recreate_framebuffers(u32 render_width, u32 render_height);
+internal void recreate_main_framebuffer(u32 render_width, u32 render_height);
 internal void recreate_voxel_grid(u32 voxel_grid_resolution);
 
 void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_width, u32 window_height, Memory_Arena* memory_arena)
@@ -527,9 +527,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     command_pool_create_info.queueFamilyIndex = vulkan_context.graphics_compute_queue_index;
     VK_CALL(vkCreateCommandPool(vulkan_context.device, &command_pool_create_info, NULL, &renderer.graphics_command_pool));
 
-    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &renderer.texture_2d_sampler};
-    VkDescriptorSetLayoutBinding texture_2d_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures, VK_SHADER_STAGE_FRAGMENT_BIT};
-    VkDescriptorSetLayoutBinding storage_material_layout_binding = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding sampler_layout_binding = {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, &renderer.texture_2d_sampler};
+    VkDescriptorSetLayoutBinding texture_2d_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding storage_material_layout_binding = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding storage_transform_layout_binding = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT};
     VkDescriptorSetLayoutBinding voxel_storage_layout_binding = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding voxel_image_layout_binding = {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
@@ -559,6 +559,18 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     per_frame_layout_create_info.pBindings = per_frame_layout_bindings;
     VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &per_frame_layout_create_info, NULL, &renderer.per_frame_descriptor_set_layout));
 
+    VkDescriptorSetLayoutBinding shading_pass_color_image_layout_binding = {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_uv_coordinates_attachment_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_uv_gradients_attachment_layout_binding = {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_material_id_attachment_layout_binding = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_layout_bindings[] = {shading_pass_color_image_layout_binding, shading_pass_uv_coordinates_attachment_layout_binding, shading_pass_uv_gradients_attachment_layout_binding, shading_pass_material_id_attachment_layout_binding};
+
+    VkDescriptorSetLayoutCreateInfo shading_pass_layout_create_info = {};
+    shading_pass_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    shading_pass_layout_create_info.bindingCount = array_count(shading_pass_layout_bindings);
+    shading_pass_layout_create_info.pBindings = shading_pass_layout_bindings;
+    VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &shading_pass_layout_create_info, NULL, &renderer.shading_pass_descriptor_set_layout));
+
     VkDescriptorSetLayoutBinding final_pass_color_attachment_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutBinding final_pass_layout_bindings[] = {sampler_layout_binding, final_pass_color_attachment_layout_binding};
 
@@ -569,9 +581,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VK_CALL(vkCreateDescriptorSetLayout(vulkan_context.device, &final_pass_layout_create_info, NULL, &renderer.final_pass_descriptor_set_layout));
 
     VkDescriptorPoolSize sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
-    VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + MAX_FRAME_RESOURCES};
+    VkDescriptorPoolSize texture_2d_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_2d_layout_binding.descriptorCount + 4};
     VkDescriptorPoolSize storage_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
-    VkDescriptorPoolSize image_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolSize image_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2};
     VkDescriptorPoolSize combined_image_sampler_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
     VkDescriptorPoolSize per_frame_uniforms_descriptor_pool_size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES};
     VkDescriptorPoolSize descriptor_pool_sizes[] = {sampler_descriptor_pool_size, texture_2d_descriptor_pool_size, storage_descriptor_pool_size, image_descriptor_pool_size, combined_image_sampler_descriptor_pool_size, per_frame_uniforms_descriptor_pool_size};
@@ -580,15 +592,17 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     descriptor_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     descriptor_pool_create_info.poolSizeCount = array_count(descriptor_pool_sizes);
     descriptor_pool_create_info.pPoolSizes = descriptor_pool_sizes;
-    descriptor_pool_create_info.maxSets = 1 + MAX_FRAME_RESOURCES * 2;
+    descriptor_pool_create_info.maxSets = 3 + MAX_FRAME_RESOURCES;
     VK_CALL(vkCreateDescriptorPool(vulkan_context.device, &descriptor_pool_create_info, NULL, &renderer.descriptor_pool));
 
-    VkDescriptorSet descriptor_sets[1 + MAX_FRAME_RESOURCES * 2];
-    VkDescriptorSetLayout set_layouts[1 + MAX_FRAME_RESOURCES * 2];
+    VkDescriptorSet descriptor_sets[3 + MAX_FRAME_RESOURCES];
+    VkDescriptorSetLayout set_layouts[3 + MAX_FRAME_RESOURCES];
     set_layouts[0] = renderer.static_descriptor_set_layout;
-    for (u32 i = 0; i < MAX_FRAME_RESOURCES * 2; ++i)
+    set_layouts[1] = renderer.shading_pass_descriptor_set_layout;
+    set_layouts[2] = renderer.final_pass_descriptor_set_layout;
+    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
-        set_layouts[i + 1] = i >= MAX_FRAME_RESOURCES ? renderer.final_pass_descriptor_set_layout : renderer.per_frame_descriptor_set_layout;
+        set_layouts[i + 3] = renderer.per_frame_descriptor_set_layout;
     }
 
     VkDescriptorSetAllocateInfo descriptor_set_allocate_info = {};
@@ -599,24 +613,17 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VK_CALL(vkAllocateDescriptorSets(vulkan_context.device, &descriptor_set_allocate_info, descriptor_sets));
 
     renderer.static_descriptor_set = descriptor_sets[0];
-    for (u32 i = 0; i < MAX_FRAME_RESOURCES * 2; ++i)
+    renderer.shading_pass_descriptor_set = descriptor_sets[1];
+    renderer.final_pass_descriptor_set = descriptor_sets[2];
+    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
-        if (i >= MAX_FRAME_RESOURCES)
-        {
-            renderer.frame_resources[i - MAX_FRAME_RESOURCES].final_pass_descriptor_set = descriptor_sets[i + 1];
-        }
-        else
-        {
-            renderer.frame_resources[i].uniforms_descriptor_set = descriptor_sets[i + 1];
-        }
+        renderer.frame_resources[i].uniforms_descriptor_set = descriptor_sets[i + 3];
     }
 
     VkDescriptorSetLayout layouts[] = {renderer.static_descriptor_set_layout, renderer.per_frame_descriptor_set_layout};
 
-    renderer.framebuffer_color_attachment_format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    renderer.framebuffer_depth_attachment_format = VK_FORMAT_D32_SFLOAT;
     // TODO: Pass in as a renderer setting?
-    recreate_framebuffers(1920, 1080);
+    recreate_main_framebuffer(1920, 1080);
     recreate_voxel_grid(128);
 
     // TODO: Make it easier to create piplines!
@@ -663,10 +670,12 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
+    VkPipelineColorBlendAttachmentState color_blend_attachments[] = {color_blend_attachment, color_blend_attachment, color_blend_attachment};
+
     VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
     color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    color_blend_state_create_info.attachmentCount = 1;
-    color_blend_state_create_info.pAttachments = &color_blend_attachment;
+    color_blend_state_create_info.attachmentCount = array_count(color_blend_attachments);
+    color_blend_state_create_info.pAttachments = color_blend_attachments;
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {};
     depth_stencil_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -779,6 +788,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     shader_stages[0].module = vertex_shader_module;
     shader_stages[1].module = fragment_shader_module;
 
+    color_blend_state_create_info.attachmentCount = 1;
+    color_blend_state_create_info.pAttachments = &color_blend_attachment;
+
     pipeline_create_info.stageCount = array_count(shader_stages);
     pipeline_create_info.pStages = shader_stages;
     pipeline_create_info.pVertexInputState = &empty_vertex_input_state_create_info;
@@ -803,13 +815,31 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     compute_stage_create_info.module = compute_shader_module;
     compute_stage_create_info.pName = "main";
 
-    VkComputePipelineCreateInfo voxelizer_compute_pipeline_create_info = {};
-    voxelizer_compute_pipeline_create_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    voxelizer_compute_pipeline_create_info.stage = compute_stage_create_info;
-    voxelizer_compute_pipeline_create_info.layout = renderer.pipeline_layout;
+    VkComputePipelineCreateInfo compute_pipeline_create_info = {};
+    compute_pipeline_create_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    compute_pipeline_create_info.stage = compute_stage_create_info;
+    compute_pipeline_create_info.layout = renderer.pipeline_layout;
 
     // NOTE: Ignoring pipeline cache for now
-    VK_CALL(vkCreateComputePipelines(vulkan_context.device, NULL, 1, &voxelizer_compute_pipeline_create_info, NULL, &renderer.voxelizer_compute_pipeline));
+    VK_CALL(vkCreateComputePipelines(vulkan_context.device, NULL, 1, &compute_pipeline_create_info, NULL, &renderer.voxelizer_compute_pipeline));
+
+    vkDestroyShaderModule(vulkan_context.device, compute_shader_module, NULL);
+
+    VkDescriptorSetLayout shading_pass_layouts[] = {renderer.static_descriptor_set_layout, renderer.shading_pass_descriptor_set_layout};
+    VkPipelineLayoutCreateInfo shading_pass_pipeline_layout_create_info = {};
+    shading_pass_pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    shading_pass_pipeline_layout_create_info.setLayoutCount = array_count(shading_pass_layouts);
+    shading_pass_pipeline_layout_create_info.pSetLayouts = shading_pass_layouts;
+    VK_CALL(vkCreatePipelineLayout(vulkan_context.device, &shading_pass_pipeline_layout_create_info, NULL, &renderer.shading_pass_pipeline_layout));
+
+    VK_CALL(vkCreateShaderModule(vulkan_context.device, &default_compute_shader_create_info, NULL, &compute_shader_module));
+    compute_stage_create_info.module = compute_shader_module;
+
+    compute_pipeline_create_info.stage = compute_stage_create_info;
+    compute_pipeline_create_info.layout = renderer.shading_pass_pipeline_layout;
+
+    // NOTE: Ignoring pipeline cache for now
+    VK_CALL(vkCreateComputePipelines(vulkan_context.device, NULL, 1, &compute_pipeline_create_info, NULL, &renderer.shading_pass_compute_pipeline));
 
     vkDestroyShaderModule(vulkan_context.device, compute_shader_module, NULL);
 
@@ -879,7 +909,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // TODO: How many buffer slots should be reserved?
     renderer.mesh_buffers = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Buffer, 4096);
-    renderer.textures = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Texture, renderer.max_2d_textures);
+    renderer.textures_2d = memory_arena_reserve_array(vulkan_context.memory_arena, Vulkan_Texture, renderer.max_2d_textures);
 
     VkFenceCreateInfo fence_create_info = {};
     fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1098,134 +1128,185 @@ internal void recreate_swapchain(u32 window_width, u32 window_height)
     }
 }
 
-internal void recreate_framebuffers(u32 render_width, u32 render_height)
+internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
 {
     renderer.render_width = render_width;
     renderer.render_height = render_height;
 
-    VkFormat depth_attachment_format = renderer.framebuffer_depth_attachment_format;
-    VkFormat color_attachment_format = renderer.framebuffer_color_attachment_format;
+    VkFormat gbuffer_uv_coordinates_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat gbuffer_uv_gradients_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat gbuffer_material_id_format = VK_FORMAT_R16_UINT;
+    VkFormat gbuffer_depth_format = VK_FORMAT_D32_SFLOAT;
+    VkFormat main_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-    // TODO: Free all attachment images and image views if they were previously allocated.
-    // Either reuse memory block (if new attachments size < old size) or free and reallocate.
+    // TODO: Free all attachment images and image views if they were previously allocated. Either reuse memory block (if new attachments size < old size) or free and reallocate.
+    // TODO: Use dedicated allocation?
     VkImageCreateInfo attachment_image_create_info = {};
     attachment_image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     attachment_image_create_info.imageType = VK_IMAGE_TYPE_2D;
-    attachment_image_create_info.format = depth_attachment_format;
     attachment_image_create_info.extent = {render_width, render_height, 1};
     attachment_image_create_info.mipLevels = 1;
     attachment_image_create_info.arrayLayers = 1;
-    attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    attachment_image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     attachment_image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     attachment_image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     attachment_image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.framebuffer_depth_attachment_image));
+    {
+        attachment_image_create_info.format = gbuffer_uv_coordinates_format;
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_uv_coordinates_attachment.image));
+    }
+    {
+        attachment_image_create_info.format = gbuffer_uv_gradients_format;
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_uv_gradients_attachment.image));
+    }
+    {
+        attachment_image_create_info.format = gbuffer_material_id_format;
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_material_id_attachment.image));
+    }
+    {
+        attachment_image_create_info.format = gbuffer_depth_format;
+        attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_depth_attachment.image));
+    }
+    {
+        attachment_image_create_info.format = main_color_format;
+        attachment_image_create_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.main_color_attachment.image));
+    }
 
-    attachment_image_create_info.format = color_attachment_format;
-    attachment_image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkMemoryRequirements main_color_requirements, gbuffer_uv_coordinates_requirements, gbuffer_uv_gradients_requirements, gbuffer_material_id_requirements, gbuffer_depth_requirements;
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.main_color_attachment.image, &main_color_requirements);
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_uv_coordinates_attachment.image, &gbuffer_uv_coordinates_requirements);
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_uv_gradients_attachment.image, &gbuffer_uv_gradients_requirements);
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_material_id_attachment.image, &gbuffer_material_id_requirements);
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_depth_attachment.image, &gbuffer_depth_requirements);
+
+    renderer.framebuffer_memory_block = allocate_vulkan_memory_block(main_color_requirements.size + gbuffer_uv_coordinates_requirements.size + gbuffer_uv_gradients_requirements.size + gbuffer_material_id_requirements.size + gbuffer_depth_requirements.size, get_memory_type_index(main_color_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.main_color_attachment.image);
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_uv_coordinates_attachment.image);
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_uv_gradients_attachment.image);
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_material_id_attachment.image);
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_depth_attachment.image);
 
     VkImageViewCreateInfo attachment_image_view_create_info = {};
     attachment_image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     attachment_image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    attachment_image_view_create_info.format = color_attachment_format;
     attachment_image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    VkMemoryRequirements depth_buffer_memory_requirements;
-    vkGetImageMemoryRequirements(vulkan_context.device, renderer.framebuffer_depth_attachment_image, &depth_buffer_memory_requirements);
-    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
-        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.frame_resources[i].framebuffer_color_attachment_image));
-        if (i == 0)
-        {
-            VkMemoryRequirements color_image_memory_requirements;
-            vkGetImageMemoryRequirements(vulkan_context.device, renderer.frame_resources[i].framebuffer_color_attachment_image, &color_image_memory_requirements);
-
-            // TODO: Use dedicated allocation extension?
-            renderer.framebuffer_memory_block = allocate_vulkan_memory_block(depth_buffer_memory_requirements.size + color_image_memory_requirements.size * MAX_FRAME_RESOURCES, get_memory_type_index(color_image_memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
-        }
-        vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.frame_resources[i].framebuffer_color_attachment_image);
-
-        attachment_image_view_create_info.image = renderer.frame_resources[i].framebuffer_color_attachment_image;
-        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.frame_resources[i].framebuffer_color_attachment_image_view));
-
-        VkDescriptorImageInfo image_info = {NULL, renderer.frame_resources[i].framebuffer_color_attachment_image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet attachment_write = {};
-        attachment_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        attachment_write.dstSet = renderer.frame_resources[i].final_pass_descriptor_set;
-        attachment_write.dstBinding = 1;
-        attachment_write.descriptorCount = 1;
-        attachment_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        attachment_write.pImageInfo = &image_info;
-        vkUpdateDescriptorSets(vulkan_context.device, 1, &attachment_write, 0, NULL);
+        attachment_image_view_create_info.format = main_color_format;
+        attachment_image_view_create_info.image = renderer.main_color_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.main_color_attachment.image_view));
     }
-    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.framebuffer_depth_attachment_image);
+    {
+        attachment_image_view_create_info.format = gbuffer_uv_coordinates_format;
+        attachment_image_view_create_info.image = renderer.gbuffer_uv_coordinates_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_uv_coordinates_attachment.image_view));
+    }
+    {
+        attachment_image_view_create_info.format = gbuffer_uv_gradients_format;
+        attachment_image_view_create_info.image = renderer.gbuffer_uv_gradients_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_uv_gradients_attachment.image_view));
+    }
+    {
+        attachment_image_view_create_info.format = gbuffer_material_id_format;
+        attachment_image_view_create_info.image = renderer.gbuffer_material_id_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_material_id_attachment.image_view));
+    }
+    {
+        attachment_image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        attachment_image_view_create_info.format = gbuffer_depth_format;
+        attachment_image_view_create_info.image = renderer.gbuffer_depth_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_depth_attachment.image_view));
+    }
 
-    attachment_image_view_create_info.format = depth_attachment_format;
-    attachment_image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    attachment_image_view_create_info.image = renderer.framebuffer_depth_attachment_image;
-    VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.framebuffer_depth_attachment_image_view));
+    VkDescriptorImageInfo main_color_image_info = {NULL, renderer.main_color_attachment.image_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet main_color_image_write = {};
+    main_color_image_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    main_color_image_write.dstSet = renderer.shading_pass_descriptor_set;
+    main_color_image_write.dstBinding = 0;
+    main_color_image_write.descriptorCount = 1;
+    main_color_image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    main_color_image_write.pImageInfo = &main_color_image_info;
 
-    VkAttachmentDescription color_attachment = {};
-    color_attachment.format = color_attachment_format;
-    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    color_attachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo uv_coordinates_image_info = {NULL, renderer.gbuffer_uv_coordinates_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet uv_coordinates_image_write = main_color_image_write;
+    uv_coordinates_image_write.dstBinding = 1;
+    uv_coordinates_image_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    uv_coordinates_image_write.pImageInfo = &uv_coordinates_image_info;
 
-    VkAttachmentDescription depth_attachment = color_attachment;
-    depth_attachment.format = depth_attachment_format;
-    depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkDescriptorImageInfo uv_gradients_image_info = {NULL, renderer.gbuffer_uv_gradients_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet uv_gradients_image_write = uv_coordinates_image_write;
+    uv_gradients_image_write.dstBinding = 2;
+    uv_gradients_image_write.pImageInfo = &uv_gradients_image_info;
 
-    VkAttachmentReference color_attachment_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depth_attachment_reference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkDescriptorImageInfo material_id_image_info = {NULL, renderer.gbuffer_material_id_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet material_ids_image_write = uv_coordinates_image_write;
+    material_ids_image_write.dstBinding = 3;
+    material_ids_image_write.pImageInfo = &material_id_image_info;
+
+    VkWriteDescriptorSet main_color_texture_write = uv_coordinates_image_write;
+    main_color_texture_write.dstSet = renderer.final_pass_descriptor_set;
+    main_color_texture_write.dstBinding = 1;
+    main_color_texture_write.pImageInfo = &main_color_image_info;
+
+    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, uv_coordinates_image_write, uv_gradients_image_write, material_ids_image_write, main_color_texture_write};
+    vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
+
+    VkAttachmentDescription attachment_description = {};
+    attachment_description.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment_description.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment_description.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment_description.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment_description.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentDescription attachment_descriptions[] = {attachment_description, attachment_description, attachment_description, attachment_description};
+    VkAttachmentReference gbuffer_color_attachment_references[3];
+    VkAttachmentReference gbuffer_depth_attachment_reference;
+    {
+        attachment_descriptions[0].format = gbuffer_uv_coordinates_format;
+        gbuffer_color_attachment_references[0] = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    }
+    {
+        attachment_descriptions[1].format = gbuffer_uv_gradients_format;
+        gbuffer_color_attachment_references[1] = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    }
+    {
+        attachment_descriptions[2].format = gbuffer_material_id_format;
+        gbuffer_color_attachment_references[2] = {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    }
+    {
+        attachment_descriptions[3].format = gbuffer_depth_format;
+        attachment_descriptions[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        gbuffer_depth_attachment_reference = {3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    }
 
     VkSubpassDescription main_subpass = {};
     main_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    main_subpass.colorAttachmentCount = 1;
-    main_subpass.pColorAttachments = &color_attachment_reference;
-    main_subpass.pDepthStencilAttachment = &depth_attachment_reference;
+    main_subpass.colorAttachmentCount = array_count(gbuffer_color_attachment_references);
+    main_subpass.pColorAttachments = gbuffer_color_attachment_references;
+    main_subpass.pDepthStencilAttachment = &gbuffer_depth_attachment_reference;
 
-    VkSubpassDependency main_subpass_dependency = {};
-    main_subpass_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    main_subpass_dependency.dstSubpass = 0;
-    main_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    main_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    main_subpass_dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    main_subpass_dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkAttachmentDescription attachment_descriptions[] = {color_attachment, depth_attachment};
     VkRenderPassCreateInfo render_pass_create_info = {};
     render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_create_info.attachmentCount = array_count(attachment_descriptions);
     render_pass_create_info.pAttachments = attachment_descriptions;
     render_pass_create_info.subpassCount = 1;
     render_pass_create_info.pSubpasses = &main_subpass;
-    render_pass_create_info.dependencyCount = 1;
-    render_pass_create_info.pDependencies = &main_subpass_dependency;
     VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.main_render_pass));
 
+    VkImageView attachments[] = {renderer.gbuffer_uv_coordinates_attachment.image_view, renderer.gbuffer_uv_gradients_attachment.image_view, renderer.gbuffer_material_id_attachment.image_view, renderer.gbuffer_depth_attachment.image_view};
     VkFramebufferCreateInfo framebuffer_create_info = {};
     framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebuffer_create_info.renderPass = renderer.main_render_pass;
     framebuffer_create_info.width = render_width;
     framebuffer_create_info.height = render_height;
     framebuffer_create_info.layers = 1;
-
-    for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
-    {
-        if (renderer.frame_resources[i].framebuffer != NULL)
-        {
-            vkDestroyFramebuffer(vulkan_context.device, renderer.frame_resources[i].framebuffer, NULL);
-        }
-
-        VkImageView attachments[] = {renderer.frame_resources[i].framebuffer_color_attachment_image_view, renderer.framebuffer_depth_attachment_image_view};
-        framebuffer_create_info.attachmentCount = array_count(attachments);
-        framebuffer_create_info.pAttachments = attachments;
-        VK_CALL(vkCreateFramebuffer(vulkan_context.device, &framebuffer_create_info, NULL, &renderer.frame_resources[i].framebuffer));
-    }
+    framebuffer_create_info.attachmentCount = array_count(attachments);
+    framebuffer_create_info.pAttachments = attachments;
+    VK_CALL(vkCreateFramebuffer(vulkan_context.device, &framebuffer_create_info, NULL, &renderer.main_framebuffer));
 }
 
 internal void recreate_voxel_grid(u32 voxel_grid_resolution)
@@ -1280,15 +1361,15 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_create_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    allocate_vulkan_image(&image_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.voxel_image, &renderer.voxel_image_memory_block);
+    allocate_vulkan_image(&image_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.voxel_texture.image, &renderer.voxel_image_memory_block);
 
     VkImageViewCreateInfo image_view_create_info = {};
     image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    image_view_create_info.image = renderer.voxel_image;
+    image_view_create_info.image = renderer.voxel_texture.image;
     image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_3D;
     image_view_create_info.format = image_create_info.format;
     image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image_create_info.mipLevels, 0, image_create_info.arrayLayers};
-    VK_CALL(vkCreateImageView(vulkan_context.device, &image_view_create_info, NULL, &renderer.voxel_image_view));
+    VK_CALL(vkCreateImageView(vulkan_context.device, &image_view_create_info, NULL, &renderer.voxel_texture.image_view));
 
     VkDescriptorBufferInfo voxel_grid_buffer_info = {renderer.voxel_storage_buffer, 0, renderer.voxel_storage_memory_block.size};
     VkWriteDescriptorSet voxel_grid_storage_write = {};
@@ -1299,7 +1380,7 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
     voxel_grid_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     voxel_grid_storage_write.pBufferInfo = &voxel_grid_buffer_info;
 
-    VkDescriptorImageInfo voxel_grid_image_info = {renderer.voxel_texture_sampler, renderer.voxel_image_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo voxel_grid_image_info = {renderer.voxel_texture_sampler, renderer.voxel_texture.image_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet voxel_grid_image_write = voxel_grid_storage_write;
     voxel_grid_image_write.dstBinding = 5;
     voxel_grid_image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -1581,7 +1662,7 @@ internal void resolve_pending_transfer_operations()
                     // TODO: Reuse texture slot. We also need to free the textures at this slot if it was previously used.
                     // Also vulkan_memory_block_reserve_image just reserves image memory from where renderer.texture_memory_used is.
                     // We need to allocate more smartly.
-                    Vulkan_Texture* texture = &renderer.textures[operation->texture.id];
+                    Vulkan_Texture* texture = &renderer.textures_2d[operation->texture.id];
                     texture->image = vulkan_memory_block_reserve_image(&renderer.texture_memory_block, &image_create_info);
 
                     VkImageViewCreateInfo image_view_create_info = {};
@@ -1881,9 +1962,11 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_compute_command_buffer, &command_buffer_begin_info));
 
-        VkClearValue clear_values[2] = {};
+        VkClearValue clear_values[4] = {};
         clear_values[0].color = {0.07f, 0.07f, 0.07f, 1.0f};
-        clear_values[1].depthStencil = {0.0f, 0};
+        clear_values[1].color = {0.0f, 0.0f, 0.0f, 0.0f};
+        clear_values[2].color = {0, 0, 0, 0};
+        clear_values[3].depthStencil = {0.0f, 0};
 
         VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set};
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
@@ -1927,7 +2010,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             voxel_image_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             voxel_image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             voxel_image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            voxel_image_barrier.image = renderer.voxel_image;
+            voxel_image_barrier.image = renderer.voxel_texture.image;
             voxel_image_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, voxel_texture_mipmap_count, 0, 1};
             voxel_image_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             voxel_image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1977,7 +2060,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
                 image_blit.dstOffsets[1] = {voxel_grid_resolution.x, voxel_grid_resolution.y, voxel_grid_resolution.z};
                 image_blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
 
-                vkCmdBlitImage(frame_resources->graphics_compute_command_buffer, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, renderer.voxel_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_blit, VK_FILTER_LINEAR);
+                vkCmdBlitImage(frame_resources->graphics_compute_command_buffer, renderer.voxel_texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, renderer.voxel_texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_blit, VK_FILTER_LINEAR);
             }
 
             // NOTE: Transition the image layout of the last mipmap separately since after the blits it has a different layout than the other mip levels
@@ -2002,7 +2085,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         // NOTE: Main render pass
         {
             render_pass_begin_info.renderPass = renderer.main_render_pass;
-            render_pass_begin_info.framebuffer = frame_resources->framebuffer;
+            render_pass_begin_info.framebuffer = renderer.main_framebuffer;
             render_pass_begin_info.renderArea.offset = {0, 0};
             render_pass_begin_info.renderArea.extent = {renderer.render_width, renderer.render_height};
             render_pass_begin_info.clearValueCount = array_count(clear_values);
@@ -2015,18 +2098,29 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             VkRect2D scissor = render_pass_begin_info.renderArea;
             vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
-            if (renderer.draw_debug_voxel_grid)
-            {
-                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
-                vkCmdDraw(frame_resources->graphics_compute_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
-            }
-            else
+            // TODO: Voxel visualization is broken right now since we are writing to the uv coordinates attachment in the shader.
+            // Need to edit the shading pass compute shader to output the uv coordinates as the color if you want to see it!
+            // if (renderer.draw_debug_voxel_grid)
+            // {
+            //     vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
+            //     vkCmdDraw(frame_resources->graphics_compute_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
+            // }
+            // else
             {
                 vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline);
                 vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
             }
 
             vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
+        }
+
+        // NOTE: Shading pass
+        {
+            VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, renderer.shading_pass_descriptor_set};
+            vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.shading_pass_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
+
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.shading_pass_compute_pipeline);
+            vkCmdDispatch(frame_resources->graphics_compute_command_buffer, renderer.render_width / 8, renderer.render_height / 8, 1);
         }
 
         // NOTE: Blit to swapchain render pass
@@ -2039,7 +2133,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
             vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);
-            vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline_layout, 0, 1, &frame_resources->final_pass_descriptor_set, 0, NULL);
+            vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline_layout, 0, 1, &renderer.final_pass_descriptor_set, 0, NULL);
 
             VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
             vkCmdSetViewport(frame_resources->graphics_compute_command_buffer, 0, 1, &viewport);

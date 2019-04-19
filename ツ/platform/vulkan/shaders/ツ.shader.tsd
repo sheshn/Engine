@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_samplerless_texture_functions : enable
 
 #define s32 int
 #define u32 uint
@@ -11,6 +12,7 @@
 #define v4 vec4
 #define uv2 uvec2
 #define uv3 uvec3
+#define sv2 ivec2
 #define sv3 ivec3
 #define m3x3 mat3
 #define m4x4 mat4
@@ -121,13 +123,45 @@ layout Default_Fragment_Layout
     layout(location = 1) in v3 in_normal;
     layout(location = 2) in v2 in_uv0;
 
-    layout(location = 0) out v4 out_color;
+    layout(location = 0) out v4 out_uv_coordinates;
+    layout(location = 1) out v4 out_uv_gradients;
+    layout(location = 2) out u32 out_material_id;
 };
 
 fragment(Default_Fragment_Layout) void default_fragment_shader()
 {
-    Material material = materials[in_instance_data.y];
-    out_color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
+    out_uv_coordinates = v4(fract(in_uv0).xy, 1, 1);
+    out_uv_gradients = v4(dFdxFine(in_uv0), dFdyFine(in_uv0));
+    out_material_id = in_instance_data.y;
+}
+
+layout Default_Compute_Layout
+{
+    layout (local_size_x = 8, local_size_y = 8) in;
+
+    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
+    layout(set = 0, binding = 1) uniform texture2D textures_2d[];
+    layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
+
+    layout(set = 1, binding = 0, rgba16) uniform image2D main_color_texture;
+    layout(set = 1, binding = 1) uniform texture2D uv_coordinates_attachment;
+    layout(set = 1, binding = 2) uniform texture2D uv_gradients_attachment;
+    layout(set = 1, binding = 3) uniform utexture2D material_id_attachment;
+};
+
+compute(Default_Compute_Layout) void default_compute_shader()
+{
+    sv2 pixel_location = sv2(gl_GlobalInvocationID.xy);
+
+    u32 material_id = u32(texelFetch(material_id_attachment, pixel_location, 0).r);
+    v2 uv0 = texelFetch(uv_coordinates_attachment, pixel_location, 0).xy;
+    v4 dxdy = texelFetch(uv_gradients_attachment, pixel_location, 0);
+
+    // TODO: Implement voxel cone tracing!
+    Material material = materials[material_id];
+    v4 out_color = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw) * material.base_color_factor;
+
+    imageStore(main_color_texture, pixel_location, out_color);
 }
 
 layout Final_Pass_Vertex_Layout
