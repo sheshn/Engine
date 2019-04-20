@@ -26,10 +26,12 @@ struct Renderer_Texture
 typedef Renderer_Buffer Renderer_Material;
 typedef Renderer_Buffer Renderer_Transform;
 
+// TODO: Also store bitangent?
 struct Vertex
 {
     v3 position;
     v3 normal;
+    v4 tangent;
     v2 uv0;
 };
 

@@ -301,6 +301,7 @@ struct Renderer
     Vulkan_Texture      gbuffer_depth_attachment;
     Vulkan_Texture      gbuffer_uv_coordinates_attachment;
     Vulkan_Texture      gbuffer_uv_gradients_attachment;
+    Vulkan_Texture      gbuffer_tangent_frame_attachment;
     Vulkan_Texture      gbuffer_material_id_attachment;
     Vulkan_Texture      main_color_attachment;
 
@@ -562,8 +563,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkDescriptorSetLayoutBinding shading_pass_color_image_layout_binding = {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding shading_pass_uv_coordinates_attachment_layout_binding = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding shading_pass_uv_gradients_attachment_layout_binding = {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
-    VkDescriptorSetLayoutBinding shading_pass_material_id_attachment_layout_binding = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
-    VkDescriptorSetLayoutBinding shading_pass_layout_bindings[] = {shading_pass_color_image_layout_binding, shading_pass_uv_coordinates_attachment_layout_binding, shading_pass_uv_gradients_attachment_layout_binding, shading_pass_material_id_attachment_layout_binding};
+    VkDescriptorSetLayoutBinding shading_pass_tangent_frame_attachment_layout_binding = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_material_id_attachment_layout_binding = {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_layout_bindings[] = {shading_pass_color_image_layout_binding, shading_pass_uv_coordinates_attachment_layout_binding, shading_pass_uv_gradients_attachment_layout_binding, shading_pass_tangent_frame_attachment_layout_binding, shading_pass_material_id_attachment_layout_binding};
 
     VkDescriptorSetLayoutCreateInfo shading_pass_layout_create_info = {};
     shading_pass_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -634,7 +636,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VK_CALL(vkCreatePipelineLayout(vulkan_context.device, &pipeline_layout_create_info, NULL, &renderer.pipeline_layout));
 
     VkVertexInputBindingDescription vertex_binding_descriptions[] = {{0, sizeof(Draw_Instance_Data), VK_VERTEX_INPUT_RATE_INSTANCE}, {1, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
-    VkVertexInputAttributeDescription vertex_attribute_descriptions[] = {{0, 0, VK_FORMAT_R32G32_UINT, 0}, {1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}, {2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12}, {3, 1, VK_FORMAT_R32G32_SFLOAT, 24}};
+    VkVertexInputAttributeDescription vertex_attribute_descriptions[] = {{0, 0, VK_FORMAT_R32G32_UINT, 0}, {1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}, {2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12}, {3, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 24}, {4, 1, VK_FORMAT_R32G32_SFLOAT, 40}};
 
     VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {};
     vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -670,7 +672,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
-    VkPipelineColorBlendAttachmentState color_blend_attachments[] = {color_blend_attachment, color_blend_attachment, color_blend_attachment};
+    VkPipelineColorBlendAttachmentState color_blend_attachments[] = {color_blend_attachment, color_blend_attachment, color_blend_attachment, color_blend_attachment};
 
     VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
     color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -1133,8 +1135,9 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     renderer.render_width = render_width;
     renderer.render_height = render_height;
 
-    VkFormat gbuffer_uv_coordinates_format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkFormat gbuffer_uv_gradients_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat gbuffer_uv_coordinates_format = VK_FORMAT_R16G16_SNORM;
+    VkFormat gbuffer_uv_gradients_format = VK_FORMAT_R16G16B16A16_SNORM;
+    VkFormat gbuffer_tangent_frame_format = VK_FORMAT_A2R10G10B10_UNORM_PACK32;
     VkFormat gbuffer_material_id_format = VK_FORMAT_R16_UINT;
     VkFormat gbuffer_depth_format = VK_FORMAT_D32_SFLOAT;
     VkFormat main_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1160,6 +1163,10 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_uv_gradients_attachment.image));
     }
     {
+        attachment_image_create_info.format = gbuffer_tangent_frame_format;
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_tangent_frame_attachment.image));
+    }
+    {
         attachment_image_create_info.format = gbuffer_material_id_format;
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_material_id_attachment.image));
     }
@@ -1174,18 +1181,20 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.main_color_attachment.image));
     }
 
-    VkMemoryRequirements main_color_requirements, gbuffer_uv_coordinates_requirements, gbuffer_uv_gradients_requirements, gbuffer_material_id_requirements, gbuffer_depth_requirements;
+    VkMemoryRequirements main_color_requirements, gbuffer_uv_coordinates_requirements, gbuffer_uv_gradients_requirements, gbuffer_tangent_frame_requirements, gbuffer_material_id_requirements, gbuffer_depth_requirements;
     vkGetImageMemoryRequirements(vulkan_context.device, renderer.main_color_attachment.image, &main_color_requirements);
     vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_uv_coordinates_attachment.image, &gbuffer_uv_coordinates_requirements);
     vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_uv_gradients_attachment.image, &gbuffer_uv_gradients_requirements);
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_tangent_frame_attachment.image, &gbuffer_tangent_frame_requirements);
     vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_material_id_attachment.image, &gbuffer_material_id_requirements);
     vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_depth_attachment.image, &gbuffer_depth_requirements);
 
-    renderer.framebuffer_memory_block = allocate_vulkan_memory_block(main_color_requirements.size + gbuffer_uv_coordinates_requirements.size + gbuffer_uv_gradients_requirements.size + gbuffer_material_id_requirements.size + gbuffer_depth_requirements.size, get_memory_type_index(main_color_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+    renderer.framebuffer_memory_block = allocate_vulkan_memory_block(main_color_requirements.size + gbuffer_uv_coordinates_requirements.size + gbuffer_uv_gradients_requirements.size + gbuffer_tangent_frame_requirements.size + gbuffer_material_id_requirements.size + gbuffer_depth_requirements.size, get_memory_type_index(main_color_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
     vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.main_color_attachment.image);
     vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_uv_coordinates_attachment.image);
     vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_uv_gradients_attachment.image);
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_tangent_frame_attachment.image);
     vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_material_id_attachment.image);
     vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_depth_attachment.image);
 
@@ -1207,6 +1216,11 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
         attachment_image_view_create_info.format = gbuffer_uv_gradients_format;
         attachment_image_view_create_info.image = renderer.gbuffer_uv_gradients_attachment.image;
         VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_uv_gradients_attachment.image_view));
+    }
+    {
+        attachment_image_view_create_info.format = gbuffer_tangent_frame_format;
+        attachment_image_view_create_info.image = renderer.gbuffer_tangent_frame_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_tangent_frame_attachment.image_view));
     }
     {
         attachment_image_view_create_info.format = gbuffer_material_id_format;
@@ -1240,17 +1254,22 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     uv_gradients_image_write.dstBinding = 2;
     uv_gradients_image_write.pImageInfo = &uv_gradients_image_info;
 
+    VkDescriptorImageInfo tangent_frame_image_info = {NULL, renderer.gbuffer_tangent_frame_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet tangent_frame_image_write = uv_coordinates_image_write;
+    tangent_frame_image_write.dstBinding = 3;
+    tangent_frame_image_write.pImageInfo = &tangent_frame_image_info;
+
     VkDescriptorImageInfo material_id_image_info = {NULL, renderer.gbuffer_material_id_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet material_ids_image_write = uv_coordinates_image_write;
-    material_ids_image_write.dstBinding = 3;
-    material_ids_image_write.pImageInfo = &material_id_image_info;
+    VkWriteDescriptorSet material_id_image_write = uv_coordinates_image_write;
+    material_id_image_write.dstBinding = 4;
+    material_id_image_write.pImageInfo = &material_id_image_info;
 
     VkWriteDescriptorSet main_color_texture_write = uv_coordinates_image_write;
     main_color_texture_write.dstSet = renderer.final_pass_descriptor_set;
     main_color_texture_write.dstBinding = 1;
     main_color_texture_write.pImageInfo = &main_color_image_info;
 
-    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, uv_coordinates_image_write, uv_gradients_image_write, material_ids_image_write, main_color_texture_write};
+    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, uv_coordinates_image_write, uv_gradients_image_write, tangent_frame_image_write, material_id_image_write, main_color_texture_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
 
     VkAttachmentDescription attachment_description = {};
@@ -1262,8 +1281,8 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachment_description.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkAttachmentDescription attachment_descriptions[] = {attachment_description, attachment_description, attachment_description, attachment_description};
-    VkAttachmentReference gbuffer_color_attachment_references[3];
+    VkAttachmentDescription attachment_descriptions[] = {attachment_description, attachment_description, attachment_description, attachment_description, attachment_description};
+    VkAttachmentReference gbuffer_color_attachment_references[4];
     VkAttachmentReference gbuffer_depth_attachment_reference;
     {
         attachment_descriptions[0].format = gbuffer_uv_coordinates_format;
@@ -1274,13 +1293,17 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
         gbuffer_color_attachment_references[1] = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     }
     {
-        attachment_descriptions[2].format = gbuffer_material_id_format;
+        attachment_descriptions[2].format = gbuffer_tangent_frame_format;
         gbuffer_color_attachment_references[2] = {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     }
     {
-        attachment_descriptions[3].format = gbuffer_depth_format;
-        attachment_descriptions[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        gbuffer_depth_attachment_reference = {3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        attachment_descriptions[3].format = gbuffer_material_id_format;
+        gbuffer_color_attachment_references[3] = {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    }
+    {
+        attachment_descriptions[4].format = gbuffer_depth_format;
+        attachment_descriptions[4].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        gbuffer_depth_attachment_reference = {4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     }
 
     VkSubpassDescription main_subpass = {};
@@ -1297,7 +1320,7 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     render_pass_create_info.pSubpasses = &main_subpass;
     VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.main_render_pass));
 
-    VkImageView attachments[] = {renderer.gbuffer_uv_coordinates_attachment.image_view, renderer.gbuffer_uv_gradients_attachment.image_view, renderer.gbuffer_material_id_attachment.image_view, renderer.gbuffer_depth_attachment.image_view};
+    VkImageView attachments[] = {renderer.gbuffer_uv_coordinates_attachment.image_view, renderer.gbuffer_uv_gradients_attachment.image_view, renderer.gbuffer_tangent_frame_attachment.image_view, renderer.gbuffer_material_id_attachment.image_view, renderer.gbuffer_depth_attachment.image_view};
     VkFramebufferCreateInfo framebuffer_create_info = {};
     framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebuffer_create_info.renderPass = renderer.main_render_pass;
@@ -1962,11 +1985,12 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_compute_command_buffer, &command_buffer_begin_info));
 
-        VkClearValue clear_values[4] = {};
-        clear_values[0].color = {0.07f, 0.07f, 0.07f, 1.0f};
+        VkClearValue clear_values[5] = {};
+        clear_values[0].color = {0.0f, 0.0f, 0.0f, 0.0f};
         clear_values[1].color = {0.0f, 0.0f, 0.0f, 0.0f};
-        clear_values[2].color = {0, 0, 0, 0};
-        clear_values[3].depthStencil = {0.0f, 0};
+        clear_values[2].color = {0.0f, 0.0f, 0.0f, 0.0f};
+        clear_values[3].color = {MAX_MATERIALS};
+        clear_values[4].depthStencil = {0.0f, 0};
 
         VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set};
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
