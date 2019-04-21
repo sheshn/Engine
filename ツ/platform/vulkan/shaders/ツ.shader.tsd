@@ -30,7 +30,7 @@ struct Material
 
     u32 albedo_texture_id;
     u32 normal_texture_id;
-    u32 roughness_metallic_occlusion_texture_id;
+    u32 occlusion_roughness_metallic_texture_id;
 
     u32 reserved[7];
 };
@@ -58,96 +58,6 @@ struct Frame_Uniforms
 
     v2  inverse_render_dimensions;
 };
-
-quat orthogonal_m3x3_to_quat(m3x3 a)
-{
-    f32 s = 0.5f / sqrt(a[0][0] + a[1][1] + a[2][2] + 1.0f);
-
-    return v4((a[2][1] - a[1][2]) * s, (a[0][2] - a[2][0]) * s, (a[1][0] - a[0][1]) * s, 0.25f / s);
-}
-
-m3x3 quat_to_m3x3(quat q)
-{
-    m3x3 m = m3x3(1.0f - 2.0f * q.y * q.y - 2.0f * q.z * q.z, 2.0f * q.x * q.y - 2.0f * q.z * q.w, 2.0f * q.x * q.z + 2.0f * q.y * q.w,
-                  2.0f * q.x * q.y + 2.0f * q.z * q.w, 1.0f - 2.0f * q.x * q.x - 2.0f * q.z * q.z, 2.0f * q.y * q.z - 2.0f * q.x * q.w,
-                  2.0f * q.x * q.z - 2.0f * q.y * q.w, 2.0f * q.y * q.z + 2.0f * q.x * q.w, 1.0f - 2.0f * q.x * q.x - 2.0f * q.y * q.y);
-    return m;//transpose(m);
-}
-
-v4 pack_quat(quat q)
-{
-    quat q_abs = abs(q);
-    f32 max_abs = max(max(q_abs.x, q_abs.y), max(q_abs.z, q_abs.w));
-    u32 max_index = 0;
-    f32 max_component = q.x;
-
-    for(uint i = 0; i < 4; ++i)
-    {
-        if(q_abs[i] == max_abs)
-        {
-            max_index = i;
-            max_component = q[i];
-        }
-    }
-
-    if(max_component < 0.0f)
-    {
-        q *= -1.0f;
-    }
-
-    v3 components;
-    if(max_index == 0)
-    {
-        components = q.yzw;
-    }
-    else if(max_index == 1)
-    {
-        components = q.xzw;
-    }
-    else if(max_index == 2)
-    {
-        components = q.xyw;
-    }
-    else
-    {
-        components = q.xyz;
-    }
-
-    f32 max_range = 1.0f / sqrt(2.0f);
-    components /= max_range;
-    components = components * 0.5f + 0.5f;
-    return v4(components, max_index / 3.0f);
-}
-
-quat unpack_quat(v4 packed)
-{
-    u32 max_index = u32(packed.w * 3.0f);
-    f32 max_range = 1.0f / sqrt(2.0f);
-
-    packed.xyz = packed.xyz * 2.0f - 1.0f;
-    packed.xyz *= max_range;
-
-    f32 max_component = sqrt(1.0f - clamp(packed.x * packed.x + packed.y * packed.y + packed.z * packed.z, 0, 1));
-
-    quat q;
-    if(max_index == 0)
-    {
-        q = quat(max_component, packed.xyz);
-    }
-    else if(max_index == 1)
-    {
-        q = quat(packed.x, max_component, packed.yz);
-    }
-    else if(max_index == 2)
-    {
-        q = quat(packed.xy, max_component, packed.z);
-    }
-    else
-    {
-        q = quat(packed.xyz, max_component);
-    }
-    return q;
-}
 
 u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
 {
@@ -243,7 +153,7 @@ layout Default_Fragment_Layout
     layout(location = 3) in v3 in_bitangent;
     layout(location = 4) in v2 in_uv0;
 
-    layout(location = 0) out v2 out_uv_coordinates;
+    layout(location = 0) out v4 out_uv_coordinates;
     layout(location = 1) out v4 out_uv_gradients;
     layout(location = 2) out v4 out_tangent_frame;
     layout(location = 3) out u32 out_material_id;
@@ -251,13 +161,13 @@ layout Default_Fragment_Layout
 
 fragment(Default_Fragment_Layout) void default_fragment_shader()
 {
+    // TODO: Pack tangent frame as quaternion properly
     v3 normal = normalize(in_normal);
     v3 tangent = normalize(in_tangent);
     v3 bitangent = normalize(in_bitangent);
-    // TODO: Pack quat doesn't work :( Try something else?
-    out_tangent_frame = v4(normal, 1);//pack_quat(orthogonal_m3x3_to_quat(m3x3(tangent, bitangent, normal))).wxyz;
+    out_tangent_frame = v4(tangent, 1);
 
-    out_uv_coordinates = fract(in_uv0);
+    out_uv_coordinates = v4(fract(in_uv0), in_normal.xy);
     out_uv_gradients = v4(dFdxFine(in_uv0), dFdyFine(in_uv0));
     out_material_id = in_material_id;
 }
@@ -312,7 +222,7 @@ v4 trace_cone(Frame_Uniforms frame_uniforms, sampler3D voxel_texture, v3 positio
 
     // TODO: Pass as uniforms?
     f32 max_distance = 1;
-    f32 ao_falloff = 40;
+    f32 ao_falloff = 60;
 
     while (samples.a < 1 && distance <= max_distance)
     {
@@ -335,10 +245,18 @@ v4 trace_cone(Frame_Uniforms frame_uniforms, sampler3D voxel_texture, v3 positio
     return v4(samples.rgb, occlusion);
 }
 
-v4 calculate_indirect_lighting(Frame_Uniforms frame_uniforms, sampler3D voxel_texture, v3 position, v3 normal, v3 albedo)
+v4 calculate_indirect_lighting(Frame_Uniforms frame_uniforms, sampler3D voxel_texture, v3 position, v3 normal, v3 albedo, v3 specular, f32 roughness)
 {
-    // TODO: Calculate indirect specular!
     v4 indirect_specular = v4(0);
+    if (specular != v3(0))
+    {
+        v3 view_direction = normalize(frame_uniforms.voxel_grid_origin - position);
+        v3 cone_direction = normalize(reflect(-view_direction, normal));
+        f32 cone_aperture = clamp(tan(PI * 0.5 * roughness), 0.0174533f, PI);
+
+        indirect_specular = trace_cone(frame_uniforms, voxel_texture, position, normal, cone_direction, cone_aperture);
+        indirect_specular.rgb *= specular;
+    }
 
     v4 indirect_diffuse = v4(0);
     if (albedo != v3(0))
@@ -372,28 +290,43 @@ compute(Default_Compute_Layout) void default_compute_shader()
     u32 material_id = u32(texelFetch(material_id_attachment, pixel_location, 0).r) & 0x7FFF;
     if (material_id != INVALID_MATERIAL_ID)
     {
-        v2 uv0 = texelFetch(uv_coordinates_attachment, pixel_location, 0).xy;
+        v4 uv_coordinates_attachment_color = texelFetch(uv_coordinates_attachment, pixel_location, 0);
+        v2 uv0 = uv_coordinates_attachment_color.xy;
         v4 dxdy = texelFetch(uv_gradients_attachment, pixel_location, 0);
 
+        // TODO: Pack tangent frame as quaternion properly
         f32 tangent_frame_handedness = bool(material_id & (1 << 15)) ? -1.0f : 1.0f;
-        // quat tangent_frame = unpack_quat(texelFetch(tangent_frame_attachment, pixel_location, 0).yzwx);
-        // m3x3 tangent_frame_matrix = quat_to_m3x3(tangent_frame);
-        // tangent_frame_matrix[1] *= tangent_frame_handedness;
+        v3 tangent_frame_normal;
+        tangent_frame_normal.xy = uv_coordinates_attachment_color.zw;
+        tangent_frame_normal.z = sqrt(1 - clamp(uv_coordinates_attachment_color.z * uv_coordinates_attachment_color.z + uv_coordinates_attachment_color.w * uv_coordinates_attachment_color.w, 0, 1));
+        v3 tangent_frame_tangent = texelFetch(tangent_frame_attachment, pixel_location, 0).xyz;
+        v3 tangent_frame_bitangent = cross(tangent_frame_normal, tangent_frame_tangent) * tangent_frame_handedness;
+        m3x3 tangent_frame_matrix = m3x3(tangent_frame_tangent, tangent_frame_bitangent, tangent_frame_normal);
 
         f32 depth = texelFetch(depth_attachment, pixel_location, 0).x;
         v2 screen_uv = (pixel_location + 0.5f) * frame_uniforms.inverse_render_dimensions;
         v3 world_space_position = depth_to_position(depth, screen_uv, frame_uniforms.projection, frame_uniforms.inverse_view_projection);
 
         Material material = materials[material_id];
-        v4 albedo = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw) * material.base_color_factor;
+        v4 base_color = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw) * material.base_color_factor;
+        v4 occlusion_roughness_metallic = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.occlusion_roughness_metallic_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw);
+        f32 roughness = occlusion_roughness_metallic.y * material.roughness_factor;
+        f32 metallic = occlusion_roughness_metallic.z * material.metallic_factor;
 
-        // v2 normal = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.normal_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw).xy;
-        // v3 tangent_space_normal;
-        // tangent_space_normal.xy = normal * 2 - 1;
-        // tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
-        v3 world_space_normal = texelFetch(tangent_frame_attachment, pixel_location, 0).xyz;//normalize(tangent_frame_matrix * tangent_space_normal);
+        v3 f0 = v3(0.04);
+        v3 albedo = base_color.rgb * (v3(1) - f0);
+        albedo *= 1 - metallic;
 
-        v4 indirect_lighting = calculate_indirect_lighting(frame_uniforms, voxel_texture, world_space_position, world_space_normal, albedo.rgb);
+        roughness *= roughness;
+        v3 specular = mix(f0, base_color.rgb, metallic);
+
+        v2 normal = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.normal_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw).xy;
+        v3 tangent_space_normal;
+        tangent_space_normal.xy = normal * 2 - 1;
+        tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
+        v3 world_space_normal = normalize(tangent_frame_matrix * tangent_space_normal);
+
+        v4 indirect_lighting = calculate_indirect_lighting(frame_uniforms, voxel_texture, world_space_position, world_space_normal, albedo, specular, roughness);
         v4 out_color = v4(indirect_lighting.rgb * indirect_lighting.a, 1);
 
         imageStore(main_color_texture, pixel_location, out_color);
@@ -421,10 +354,34 @@ layout Final_Pass_Fragment_Layout
     layout(location = 0) out v4 out_color;
 };
 
+v3 aces_tonemap(v3 color)
+{
+    m3x3 aces_input_mat =
+    {
+        {0.59719, 0.35458, 0.04823},
+        {0.07600, 0.90834, 0.01566},
+        {0.02840, 0.13383, 0.83777}
+    };
+    m3x3 aces_output_mat =
+    {
+        { 1.60475, -0.53108, -0.07367},
+        {-0.10208,  1.10813, -0.00605},
+        {-0.00327, -0.07276,  1.07602}
+    };
+
+    color = color * aces_input_mat;
+    color = ((color * (color + 0.0245786f) - 0.000090537f) / (color * (0.983729f * color + 0.4329510f) + 0.238081f)) * aces_output_mat;
+    return clamp(color, 0, 1);
+}
+
 fragment(Final_Pass_Fragment_Layout) void final_pass_fragment_shader()
 {
-    // TODO: Tonemap!
-    out_color = texture(sampler2D(color0_attachment, texture_2d_sampler), in_uv);
+    v3 color = texture(sampler2D(color0_attachment, texture_2d_sampler), in_uv).xyz;
+    color *= 3; // TODO: Automatic exposure
+
+    color = aces_tonemap(color);
+
+    out_color = v4(color, 1);
 }
 
 layout Voxelizer_Vertex_Layout

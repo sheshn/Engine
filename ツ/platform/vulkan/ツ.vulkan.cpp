@@ -519,7 +519,6 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     sampler_create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     VK_CALL(vkCreateSampler(vulkan_context.device, &sampler_create_info, NULL, &renderer.texture_2d_sampler));
 
-    sampler_create_info.magFilter = VK_FILTER_NEAREST;
     sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_create_info.addressModeV = sampler_create_info.addressModeU;
     sampler_create_info.addressModeW = sampler_create_info.addressModeU;
@@ -1141,9 +1140,9 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     renderer.render_width = render_width;
     renderer.render_height = render_height;
 
-    VkFormat gbuffer_uv_coordinates_format = VK_FORMAT_R16G16_SNORM;
+    VkFormat gbuffer_uv_coordinates_format = VK_FORMAT_R16G16B16A16_SNORM;
     VkFormat gbuffer_uv_gradients_format = VK_FORMAT_R16G16B16A16_SNORM;
-    VkFormat gbuffer_tangent_frame_format = VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+    VkFormat gbuffer_tangent_frame_format = VK_FORMAT_R16G16B16A16_SNORM;
     VkFormat gbuffer_material_id_format = VK_FORMAT_R16_UINT;
     VkFormat gbuffer_depth_format = VK_FORMAT_D32_SFLOAT;
     VkFormat main_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
