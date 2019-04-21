@@ -370,7 +370,9 @@ void __stdcall WinMainCRTStartup()
 
     SYSTEM_INFO sys_info;
     GetSystemInfo(&sys_info);
-    init_job_system(sys_info.dwNumberOfProcessors - 1, 3, &platform_arena);
+    // TODO: Fix input lag!!!!
+    // init_job_system(sys_info.dwNumberOfProcessors - 1, 3, &platform_arena);
+    init_job_system(1, 3, &platform_arena);
 
     if (!win32_init_vulkan_renderer(window_handle, window_width, window_height))
     {

@@ -205,11 +205,16 @@ struct Draw_Instance_Data
 
 struct Frame_Uniforms
 {
+    m4x4 projection;
     m4x4 view_projection;
+    m4x4 inverse_view_projection;
 
     v3  voxel_grid_origin;
     f32 voxel_grid_resolution;
     f32 voxel_size;
+    f32 voxel_ray_step_size;
+
+    v2  inverse_render_dimensions;
 };
 
 #define MAX_2D_TEXTURES          2048
@@ -534,7 +539,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkDescriptorSetLayoutBinding storage_transform_layout_binding = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT};
     VkDescriptorSetLayoutBinding voxel_storage_layout_binding = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding voxel_image_layout_binding = {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
-    VkDescriptorSetLayoutBinding voxel_texture_layout_binding = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding voxel_texture_layout_binding = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT};
 
     VkDescriptorSetLayoutBinding static_layout_bindings[] = {sampler_layout_binding, texture_2d_layout_binding, storage_material_layout_binding, storage_transform_layout_binding, voxel_storage_layout_binding, voxel_image_layout_binding, voxel_texture_layout_binding};
     VkDescriptorBindingFlagsEXT binding_flags[] = {0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT, 0, 0, 0, 0, 0};
@@ -565,7 +570,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkDescriptorSetLayoutBinding shading_pass_uv_gradients_attachment_layout_binding = {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding shading_pass_tangent_frame_attachment_layout_binding = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
     VkDescriptorSetLayoutBinding shading_pass_material_id_attachment_layout_binding = {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
-    VkDescriptorSetLayoutBinding shading_pass_layout_bindings[] = {shading_pass_color_image_layout_binding, shading_pass_uv_coordinates_attachment_layout_binding, shading_pass_uv_gradients_attachment_layout_binding, shading_pass_tangent_frame_attachment_layout_binding, shading_pass_material_id_attachment_layout_binding};
+    VkDescriptorSetLayoutBinding shading_pass_depth_attachment_layout_binding = {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutBinding shading_pass_layout_bindings[] = {shading_pass_color_image_layout_binding, shading_pass_uv_coordinates_attachment_layout_binding, shading_pass_uv_gradients_attachment_layout_binding, shading_pass_tangent_frame_attachment_layout_binding, shading_pass_material_id_attachment_layout_binding, shading_pass_depth_attachment_layout_binding};
 
     VkDescriptorSetLayoutCreateInfo shading_pass_layout_create_info = {};
     shading_pass_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -626,7 +632,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // TODO: Pass in as a renderer setting?
     recreate_main_framebuffer(1920, 1080);
-    recreate_voxel_grid(128);
+    recreate_voxel_grid(256);
 
     // TODO: Make it easier to create piplines!
     VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
@@ -827,7 +833,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     vkDestroyShaderModule(vulkan_context.device, compute_shader_module, NULL);
 
-    VkDescriptorSetLayout shading_pass_layouts[] = {renderer.static_descriptor_set_layout, renderer.shading_pass_descriptor_set_layout};
+    VkDescriptorSetLayout shading_pass_layouts[] = {renderer.static_descriptor_set_layout, renderer.per_frame_descriptor_set_layout, renderer.shading_pass_descriptor_set_layout};
     VkPipelineLayoutCreateInfo shading_pass_pipeline_layout_create_info = {};
     shading_pass_pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     shading_pass_pipeline_layout_create_info.setLayoutCount = array_count(shading_pass_layouts);
@@ -1172,7 +1178,7 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     }
     {
         attachment_image_create_info.format = gbuffer_depth_format;
-        attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_depth_attachment.image));
     }
     {
@@ -1264,12 +1270,17 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     material_id_image_write.dstBinding = 4;
     material_id_image_write.pImageInfo = &material_id_image_info;
 
+    VkDescriptorImageInfo depth_image_info = {NULL, renderer.gbuffer_depth_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet depth_image_write = uv_coordinates_image_write;
+    depth_image_write.dstBinding = 5;
+    depth_image_write.pImageInfo = &depth_image_info;
+
     VkWriteDescriptorSet main_color_texture_write = uv_coordinates_image_write;
     main_color_texture_write.dstSet = renderer.final_pass_descriptor_set;
     main_color_texture_write.dstBinding = 1;
     main_color_texture_write.pImageInfo = &main_color_image_info;
 
-    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, uv_coordinates_image_write, uv_gradients_image_write, tangent_frame_image_write, material_id_image_write, main_color_texture_write};
+    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, uv_coordinates_image_write, uv_gradients_image_write, tangent_frame_image_write, material_id_image_write, depth_image_write, main_color_texture_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
 
     VkAttachmentDescription attachment_description = {};
@@ -1302,7 +1313,6 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     }
     {
         attachment_descriptions[4].format = gbuffer_depth_format;
-        attachment_descriptions[4].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         gbuffer_depth_attachment_reference = {4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     }
 
@@ -1903,12 +1913,17 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     renderer.current_render_frame->draw_instance_count = 0;
     memory_arena_reset(&renderer.current_render_frame->draw_instance_arena);
 
+    renderer.current_render_frame->uniforms->projection = frame_params->camera.projection;
     renderer.current_render_frame->uniforms->view_projection = frame_params->camera.projection * frame_params->camera.view;
+    renderer.current_render_frame->uniforms->inverse_view_projection = inverse(renderer.current_render_frame->uniforms->view_projection);
+
+    renderer.current_render_frame->uniforms->inverse_render_dimensions = {1.0f / (f32)renderer.render_width, 1.0f / (f32)renderer.render_height};
 
     assert(renderer.voxel_grid_resolution.x == renderer.voxel_grid_resolution.y && renderer.voxel_grid_resolution.x == renderer.voxel_grid_resolution.z);
     renderer.current_render_frame->uniforms->voxel_grid_origin = frame_params->camera.position;
     renderer.current_render_frame->uniforms->voxel_grid_resolution = (f32)renderer.voxel_grid_resolution.x;
     renderer.current_render_frame->uniforms->voxel_size = 0.1;
+    renderer.current_render_frame->uniforms->voxel_ray_step_size = 0.5;
 }
 
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)
@@ -2140,7 +2155,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
         // NOTE: Shading pass
         {
-            VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, renderer.shading_pass_descriptor_set};
+            VkDescriptorSet descriptor_sets[] = {renderer.static_descriptor_set, frame_resources->uniforms_descriptor_set, renderer.shading_pass_descriptor_set};
             vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.shading_pass_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
             vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.shading_pass_compute_pipeline);

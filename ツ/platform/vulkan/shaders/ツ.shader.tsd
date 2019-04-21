@@ -18,6 +18,8 @@
 #define m3x3 mat3
 #define m4x4 mat4
 
+#define PI 3.14159265358979323846
+
 #define INVALID_MATERIAL_ID (1 << 15)
 
 struct Material
@@ -45,16 +47,20 @@ struct Voxel_Data
 
 struct Frame_Uniforms
 {
+    m4x4 projection;
     m4x4 view_projection;
+    m4x4 inverse_view_projection;
 
     v3  voxel_grid_origin;
     f32 voxel_grid_resolution;
     f32 voxel_size;
+    f32 voxel_ray_step_size;
+
+    v2  inverse_render_dimensions;
 };
 
-quat orthogonal_m3x3_to_quat(m3x3 m)
+quat orthogonal_m3x3_to_quat(m3x3 a)
 {
-    m3x3 a = transpose(m);
     f32 s = 0.5f / sqrt(a[0][0] + a[1][1] + a[2][2] + 1.0f);
 
     return v4((a[2][1] - a[1][2]) * s, (a[0][2] - a[2][0]) * s, (a[1][0] - a[0][1]) * s, 0.25f / s);
@@ -65,7 +71,7 @@ m3x3 quat_to_m3x3(quat q)
     m3x3 m = m3x3(1.0f - 2.0f * q.y * q.y - 2.0f * q.z * q.z, 2.0f * q.x * q.y - 2.0f * q.z * q.w, 2.0f * q.x * q.z + 2.0f * q.y * q.w,
                   2.0f * q.x * q.y + 2.0f * q.z * q.w, 1.0f - 2.0f * q.x * q.x - 2.0f * q.z * q.z, 2.0f * q.y * q.z - 2.0f * q.x * q.w,
                   2.0f * q.x * q.z - 2.0f * q.y * q.w, 2.0f * q.y * q.z + 2.0f * q.x * q.w, 1.0f - 2.0f * q.x * q.x - 2.0f * q.y * q.y);
-    return transpose(m);
+    return m;//transpose(m);
 }
 
 v4 pack_quat(quat q)
@@ -180,6 +186,14 @@ v4 decode_u32_color_as_v4(u32 color)
     return result;
 }
 
+v3 depth_to_position(f32 depth, v2 uv, m4x4 projection, m4x4 inverse_view_projection)
+{
+    f32 linear_depth = projection[3][2] / (depth - projection[2][2]);
+    v4 clip_space = v4(uv * 2 - 1, depth, 1);
+    v4 world_space = inverse_view_projection * clip_space;
+    return world_space.xyz / world_space.w;
+}
+
 layout Default_Vertex_Layout
 {
     layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
@@ -240,7 +254,8 @@ fragment(Default_Fragment_Layout) void default_fragment_shader()
     v3 normal = normalize(in_normal);
     v3 tangent = normalize(in_tangent);
     v3 bitangent = normalize(in_bitangent);
-    out_tangent_frame = pack_quat(orthogonal_m3x3_to_quat(m3x3(tangent, bitangent, normal))).wxyz;
+    // TODO: Pack quat doesn't work :( Try something else?
+    out_tangent_frame = v4(normal, 1);//pack_quat(orthogonal_m3x3_to_quat(m3x3(tangent, bitangent, normal))).wxyz;
 
     out_uv_coordinates = fract(in_uv0);
     out_uv_gradients = v4(dFdxFine(in_uv0), dFdyFine(in_uv0));
@@ -255,13 +270,100 @@ layout Default_Compute_Layout
     layout(set = 0, binding = 1) uniform texture2D textures_2d[];
     layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
     layout(set = 0, binding = 6) uniform sampler3D voxel_texture;
+    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
-    layout(set = 1, binding = 0, rgba16) uniform image2D main_color_texture;
-    layout(set = 1, binding = 1) uniform texture2D uv_coordinates_attachment;
-    layout(set = 1, binding = 2) uniform texture2D uv_gradients_attachment;
-    layout(set = 1, binding = 3) uniform texture2D tangent_frame_attachment;
-    layout(set = 1, binding = 4) uniform utexture2D material_id_attachment;
+    layout(set = 2, binding = 0, rgba16) uniform image2D main_color_texture;
+    layout(set = 2, binding = 1) uniform texture2D uv_coordinates_attachment;
+    layout(set = 2, binding = 2) uniform texture2D uv_gradients_attachment;
+    layout(set = 2, binding = 3) uniform texture2D tangent_frame_attachment;
+    layout(set = 2, binding = 4) uniform utexture2D material_id_attachment;
+    layout(set = 2, binding = 5) uniform texture2D depth_attachment;
 };
+
+#define MAX_DIFFUSE_CONES 6
+v3 diffuse_cone_directions[MAX_DIFFUSE_CONES] =
+{
+    v3(0.0f, 1.0f, 0.0f),
+    v3(0.0f, 0.5f, 0.866025f),
+    v3(0.823639f, 0.5f, 0.267617f),
+    v3(0.509037f, 0.5f, -0.7006629f),
+    v3(-0.50937f, 0.5f, -0.7006629f),
+    v3(-0.823639f, 0.5f, 0.267617f)
+};
+
+f32 diffuse_cone_weights[] =
+{
+    PI / 4.0f,
+    3.0f * PI / 20.0f,
+    3.0f * PI / 20.0f,
+    3.0f * PI / 20.0f,
+    3.0f * PI / 20.0f,
+    3.0f * PI / 20.0f,
+};
+
+v4 trace_cone(Frame_Uniforms frame_uniforms, sampler3D voxel_texture, v3 position, v3 normal, v3 cone_direction, f32 cone_aperture)
+{
+    // NOTE: Offset by one voxel to avoid self lighting
+    f32 distance = frame_uniforms.voxel_size;
+    v3 cone_origin = position + normal * distance;
+
+    v4 samples = v4(0);
+    f32 occlusion = 0;
+
+    // TODO: Pass as uniforms?
+    f32 max_distance = 1;
+    f32 ao_falloff = 40;
+
+    while (samples.a < 1 && distance <= max_distance)
+    {
+        f32 cone_diameter = 2 * cone_aperture * distance;
+        f32 mip = log2(cone_diameter / frame_uniforms.voxel_size);
+
+        v3 uvw = 0.5 * (((cone_origin + cone_direction * distance) - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_size / frame_uniforms.voxel_grid_resolution) + 0.5;
+        if (uvw != clamp(uvw, 0, 1) || mip >= 9) // TODO: Pass voxel_texture mipmap count as uniform
+        {
+            break;
+        }
+
+        v4 voxel_color = textureLod(voxel_texture, uvw, mip);
+        samples += (1 - samples.a) * voxel_color;
+        occlusion += ((1 - occlusion) * voxel_color.a) / (1 + ao_falloff * cone_diameter);
+
+        distance += cone_diameter * frame_uniforms.voxel_ray_step_size;
+    }
+
+    return v4(samples.rgb, occlusion);
+}
+
+v4 calculate_indirect_lighting(Frame_Uniforms frame_uniforms, sampler3D voxel_texture, v3 position, v3 normal, v3 albedo)
+{
+    // TODO: Calculate indirect specular!
+    v4 indirect_specular = v4(0);
+
+    v4 indirect_diffuse = v4(0);
+    if (albedo != v3(0))
+    {
+        v3 guide = v3(0, 1, 0);
+        if (abs(dot(normal, guide)) == 1)
+        {
+            guide = v3(0, 0, 1);
+        }
+        v3 right = normalize(guide - dot(normal, guide) * normal);
+        v3 up = cross(right, normal);
+
+        for (u32 i = 0; i < MAX_DIFFUSE_CONES; ++i)
+        {
+            v3 cone_direction = normalize(normal + diffuse_cone_directions[i].x * right + diffuse_cone_directions[i].z * up);
+            f32 cone_aperture = 0.57735;
+            indirect_diffuse += trace_cone(frame_uniforms, voxel_texture, position, normal, cone_direction, cone_aperture) * diffuse_cone_weights[i];
+        }
+
+        indirect_diffuse.rgb *= albedo;
+    }
+
+    v3 result = indirect_diffuse.rgb + indirect_specular.rgb;
+    return v4(result, clamp(1 - indirect_diffuse.a, 0, 1));
+}
 
 compute(Default_Compute_Layout) void default_compute_shader()
 {
@@ -274,13 +376,25 @@ compute(Default_Compute_Layout) void default_compute_shader()
         v4 dxdy = texelFetch(uv_gradients_attachment, pixel_location, 0);
 
         f32 tangent_frame_handedness = bool(material_id & (1 << 15)) ? -1.0f : 1.0f;
-        quat tangent_frame = unpack_quat(texelFetch(tangent_frame_attachment, pixel_location, 0).yzwx);
-        m3x3 tangent_frame_matrix = quat_to_m3x3(tangent_frame);
-        tangent_frame_matrix[1] *= tangent_frame_handedness;
+        // quat tangent_frame = unpack_quat(texelFetch(tangent_frame_attachment, pixel_location, 0).yzwx);
+        // m3x3 tangent_frame_matrix = quat_to_m3x3(tangent_frame);
+        // tangent_frame_matrix[1] *= tangent_frame_handedness;
 
-        // TODO: Implement voxel cone tracing!
+        f32 depth = texelFetch(depth_attachment, pixel_location, 0).x;
+        v2 screen_uv = (pixel_location + 0.5f) * frame_uniforms.inverse_render_dimensions;
+        v3 world_space_position = depth_to_position(depth, screen_uv, frame_uniforms.projection, frame_uniforms.inverse_view_projection);
+
         Material material = materials[material_id];
-        v4 out_color = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw) * material.base_color_factor;
+        v4 albedo = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw) * material.base_color_factor;
+
+        // v2 normal = textureGrad(sampler2D(textures_2d[nonuniformEXT(material.normal_texture_id)], texture_2d_sampler), uv0, dxdy.xy, dxdy.zw).xy;
+        // v3 tangent_space_normal;
+        // tangent_space_normal.xy = normal * 2 - 1;
+        // tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
+        v3 world_space_normal = texelFetch(tangent_frame_attachment, pixel_location, 0).xyz;//normalize(tangent_frame_matrix * tangent_space_normal);
+
+        v4 indirect_lighting = calculate_indirect_lighting(frame_uniforms, voxel_texture, world_space_position, world_space_normal, albedo.rgb);
+        v4 out_color = v4(indirect_lighting.rgb * indirect_lighting.a, 1);
 
         imageStore(main_color_texture, pixel_location, out_color);
     }
@@ -414,7 +528,7 @@ layout Voxelizer_Fragment_Layout
 
 fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
 {
-    v3 uvw = v3(0.5) * ((in_position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size) + 0.5f;
+    v3 uvw = 0.5 * ((in_position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size) + 0.5f;
     if (uvw == clamp(uvw, 0, 1))
     {
         Material material = materials[in_instance_data.y];
