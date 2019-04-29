@@ -302,12 +302,8 @@ struct Renderer
 
     Vulkan_Memory_Block framebuffer_memory_block;
     VkFramebuffer       main_framebuffer;
-    Vulkan_Texture      gbuffer_depth_attachment;
-    Vulkan_Texture      gbuffer_uv_coordinates_attachment;
-    Vulkan_Texture      gbuffer_uv_gradients_attachment;
-    Vulkan_Texture      gbuffer_tangent_frame_attachment;
-    Vulkan_Texture      gbuffer_material_id_attachment;
     Vulkan_Texture      main_color_attachment;
+    Vulkan_Texture      main_depth_attachment;
 
     Vulkan_Memory_Block voxel_storage_memory_block;
     VkBuffer            voxel_storage_buffer;
@@ -515,11 +511,7 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     renderer.render_width = render_width;
     renderer.render_height = render_height;
 
-    VkFormat gbuffer_uv_coordinates_format = VK_FORMAT_R16G16_SNORM;
-    VkFormat gbuffer_uv_gradients_format = VK_FORMAT_R16G16B16A16_SNORM;
-    VkFormat gbuffer_tangent_frame_format = VK_FORMAT_R16G16B16A16_SNORM;
-    VkFormat gbuffer_material_id_format = VK_FORMAT_R16_UINT;
-    VkFormat gbuffer_depth_format = VK_FORMAT_D32_SFLOAT;
+    VkFormat main_depth_format = VK_FORMAT_D32_SFLOAT;
     VkFormat main_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     // TODO: Free all attachment images and image views if they were previously allocated. Either reuse memory block (if new attachments size < old size) or free and reallocate.
@@ -530,53 +522,28 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     attachment_image_create_info.extent = {render_width, render_height, 1};
     attachment_image_create_info.mipLevels = 1;
     attachment_image_create_info.arrayLayers = 1;
-    attachment_image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     attachment_image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     attachment_image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     attachment_image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     {
-        attachment_image_create_info.format = gbuffer_uv_coordinates_format;
-        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_uv_coordinates_attachment.image));
-    }
-    {
-        attachment_image_create_info.format = gbuffer_uv_gradients_format;
-        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_uv_gradients_attachment.image));
-    }
-    {
-        attachment_image_create_info.format = gbuffer_tangent_frame_format;
-        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_tangent_frame_attachment.image));
-    }
-    {
-        attachment_image_create_info.format = gbuffer_material_id_format;
-        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_material_id_attachment.image));
-    }
-    {
-        attachment_image_create_info.format = gbuffer_depth_format;
+        attachment_image_create_info.format = main_depth_format;
         attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.gbuffer_depth_attachment.image));
+        VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.main_depth_attachment.image));
     }
     {
         attachment_image_create_info.format = main_color_format;
-        attachment_image_create_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        attachment_image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.main_color_attachment.image));
     }
 
-    VkMemoryRequirements main_color_requirements, gbuffer_uv_coordinates_requirements, gbuffer_uv_gradients_requirements, gbuffer_tangent_frame_requirements, gbuffer_material_id_requirements, gbuffer_depth_requirements;
+    VkMemoryRequirements main_color_requirements, main_depth_requirements;
     vkGetImageMemoryRequirements(vulkan_context.device, renderer.main_color_attachment.image, &main_color_requirements);
-    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_uv_coordinates_attachment.image, &gbuffer_uv_coordinates_requirements);
-    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_uv_gradients_attachment.image, &gbuffer_uv_gradients_requirements);
-    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_tangent_frame_attachment.image, &gbuffer_tangent_frame_requirements);
-    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_material_id_attachment.image, &gbuffer_material_id_requirements);
-    vkGetImageMemoryRequirements(vulkan_context.device, renderer.gbuffer_depth_attachment.image, &gbuffer_depth_requirements);
+    vkGetImageMemoryRequirements(vulkan_context.device, renderer.main_depth_attachment.image, &main_depth_requirements);
 
-    renderer.framebuffer_memory_block = allocate_vulkan_memory_block(main_color_requirements.size + gbuffer_uv_coordinates_requirements.size + gbuffer_uv_gradients_requirements.size + gbuffer_tangent_frame_requirements.size + gbuffer_material_id_requirements.size + gbuffer_depth_requirements.size, get_memory_type_index(main_color_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+    renderer.framebuffer_memory_block = allocate_vulkan_memory_block(main_color_requirements.size + main_depth_requirements.size, get_memory_type_index(main_color_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
     vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.main_color_attachment.image);
-    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_uv_coordinates_attachment.image);
-    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_uv_gradients_attachment.image);
-    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_tangent_frame_attachment.image);
-    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_material_id_attachment.image);
-    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.gbuffer_depth_attachment.image);
+    vulkan_memory_block_reserve_image(&renderer.framebuffer_memory_block, renderer.main_depth_attachment.image);
 
     VkImageViewCreateInfo attachment_image_view_create_info = {};
     attachment_image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -588,111 +555,51 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
         VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.main_color_attachment.image_view));
     }
     {
-        attachment_image_view_create_info.format = gbuffer_uv_coordinates_format;
-        attachment_image_view_create_info.image = renderer.gbuffer_uv_coordinates_attachment.image;
-        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_uv_coordinates_attachment.image_view));
-    }
-    {
-        attachment_image_view_create_info.format = gbuffer_uv_gradients_format;
-        attachment_image_view_create_info.image = renderer.gbuffer_uv_gradients_attachment.image;
-        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_uv_gradients_attachment.image_view));
-    }
-    {
-        attachment_image_view_create_info.format = gbuffer_tangent_frame_format;
-        attachment_image_view_create_info.image = renderer.gbuffer_tangent_frame_attachment.image;
-        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_tangent_frame_attachment.image_view));
-    }
-    {
-        attachment_image_view_create_info.format = gbuffer_material_id_format;
-        attachment_image_view_create_info.image = renderer.gbuffer_material_id_attachment.image;
-        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_material_id_attachment.image_view));
-    }
-    {
         attachment_image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        attachment_image_view_create_info.format = gbuffer_depth_format;
-        attachment_image_view_create_info.image = renderer.gbuffer_depth_attachment.image;
-        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.gbuffer_depth_attachment.image_view));
+        attachment_image_view_create_info.format = main_depth_format;
+        attachment_image_view_create_info.image = renderer.main_depth_attachment.image;
+        VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.main_depth_attachment.image_view));
     }
 
-    VkDescriptorImageInfo main_color_image_info = {NULL, renderer.main_color_attachment.image_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo main_color_image_info = {NULL, renderer.main_color_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet main_color_image_write = {};
     main_color_image_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     main_color_image_write.dstSet = renderer.global_descriptor_set;
     main_color_image_write.dstBinding = 4;
     main_color_image_write.descriptorCount = 1;
-    main_color_image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    main_color_image_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     main_color_image_write.pImageInfo = &main_color_image_info;
 
-    VkWriteDescriptorSet main_color_texture_write = main_color_image_write;
-    main_color_texture_write.dstBinding = 5;
-    main_color_texture_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-
-    VkDescriptorImageInfo uv_coordinates_image_info = {NULL, renderer.gbuffer_uv_coordinates_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet uv_coordinates_image_write = main_color_texture_write;
-    uv_coordinates_image_write.dstBinding = 6;
-    uv_coordinates_image_write.pImageInfo = &uv_coordinates_image_info;
-
-    VkDescriptorImageInfo uv_gradients_image_info = {NULL, renderer.gbuffer_uv_gradients_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet uv_gradients_image_write = uv_coordinates_image_write;
-    uv_gradients_image_write.dstBinding = 7;
-    uv_gradients_image_write.pImageInfo = &uv_gradients_image_info;
-
-    VkDescriptorImageInfo tangent_frame_image_info = {NULL, renderer.gbuffer_tangent_frame_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet tangent_frame_image_write = uv_coordinates_image_write;
-    tangent_frame_image_write.dstBinding = 8;
-    tangent_frame_image_write.pImageInfo = &tangent_frame_image_info;
-
-    VkDescriptorImageInfo material_id_image_info = {NULL, renderer.gbuffer_material_id_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet material_id_image_write = uv_coordinates_image_write;
-    material_id_image_write.dstBinding = 9;
-    material_id_image_write.pImageInfo = &material_id_image_info;
-
-    VkDescriptorImageInfo depth_image_info = {NULL, renderer.gbuffer_depth_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet depth_image_write = uv_coordinates_image_write;
-    depth_image_write.dstBinding = 10;
+    VkDescriptorImageInfo depth_image_info = {NULL, renderer.main_depth_attachment.image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet depth_image_write = main_color_image_write;
+    depth_image_write.dstBinding = 5;
     depth_image_write.pImageInfo = &depth_image_info;
 
-    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, main_color_texture_write, uv_coordinates_image_write, uv_gradients_image_write, tangent_frame_image_write, material_id_image_write, depth_image_write};
+    VkWriteDescriptorSet descriptor_writes[] = {main_color_image_write, depth_image_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
 
-    VkAttachmentDescription attachment_description = {};
-    attachment_description.samples = VK_SAMPLE_COUNT_1_BIT;
-    attachment_description.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachment_description.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachment_description.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachment_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachment_description.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentDescription color_attachment_description = {};
+    color_attachment_description.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment_description.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment_description.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment_description.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_attachment_description.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    color_attachment_description.format = main_color_format;
 
-    VkAttachmentDescription attachment_descriptions[] = {attachment_description, attachment_description, attachment_description, attachment_description, attachment_description};
-    VkAttachmentReference gbuffer_color_attachment_references[4];
-    VkAttachmentReference gbuffer_depth_attachment_reference;
-    {
-        attachment_descriptions[0].format = gbuffer_uv_coordinates_format;
-        gbuffer_color_attachment_references[0] = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    }
-    {
-        attachment_descriptions[1].format = gbuffer_uv_gradients_format;
-        gbuffer_color_attachment_references[1] = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    }
-    {
-        attachment_descriptions[2].format = gbuffer_tangent_frame_format;
-        gbuffer_color_attachment_references[2] = {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    }
-    {
-        attachment_descriptions[3].format = gbuffer_material_id_format;
-        gbuffer_color_attachment_references[3] = {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    }
-    {
-        attachment_descriptions[4].format = gbuffer_depth_format;
-        gbuffer_depth_attachment_reference = {4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    }
+    VkAttachmentDescription depth_attachment_description = color_attachment_description;
+    depth_attachment_description.format = main_depth_format;
+
+    VkAttachmentDescription attachment_descriptions[] = {color_attachment_description, depth_attachment_description};
+    VkAttachmentReference color_attachment_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_attachment_reference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
     VkSubpassDescription main_subpass = {};
     main_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    main_subpass.colorAttachmentCount = array_count(gbuffer_color_attachment_references);
-    main_subpass.pColorAttachments = gbuffer_color_attachment_references;
-    main_subpass.pDepthStencilAttachment = &gbuffer_depth_attachment_reference;
+    main_subpass.colorAttachmentCount = 1;
+    main_subpass.pColorAttachments = &color_attachment_reference;
+    main_subpass.pDepthStencilAttachment = &depth_attachment_reference;
 
     VkRenderPassCreateInfo render_pass_create_info = {};
     render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -702,7 +609,7 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     render_pass_create_info.pSubpasses = &main_subpass;
     VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.main_render_pass));
 
-    VkImageView attachments[] = {renderer.gbuffer_uv_coordinates_attachment.image_view, renderer.gbuffer_uv_gradients_attachment.image_view, renderer.gbuffer_tangent_frame_attachment.image_view, renderer.gbuffer_material_id_attachment.image_view, renderer.gbuffer_depth_attachment.image_view};
+    VkImageView attachments[] = {renderer.main_color_attachment.image_view, renderer.main_depth_attachment.image_view};
     VkFramebufferCreateInfo framebuffer_create_info = {};
     framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebuffer_create_info.renderPass = renderer.main_render_pass;
@@ -780,20 +687,20 @@ internal void recreate_voxel_grid(u32 voxel_grid_resolution)
     VkWriteDescriptorSet voxel_grid_storage_write = {};
     voxel_grid_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     voxel_grid_storage_write.dstSet = renderer.global_descriptor_set;
-    voxel_grid_storage_write.dstBinding = 11;
+    voxel_grid_storage_write.dstBinding = 6;
     voxel_grid_storage_write.descriptorCount = 1;
     voxel_grid_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     voxel_grid_storage_write.pBufferInfo = &voxel_grid_buffer_info;
 
     VkDescriptorImageInfo voxel_grid_image_info = {renderer.voxel_texture_sampler, renderer.voxel_texture.image_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet voxel_grid_image_write = voxel_grid_storage_write;
-    voxel_grid_image_write.dstBinding = 12;
+    voxel_grid_image_write.dstBinding = 7;
     voxel_grid_image_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     voxel_grid_image_write.pImageInfo = &voxel_grid_image_info;
     voxel_grid_image_write.pBufferInfo = NULL;
 
     VkWriteDescriptorSet voxel_texture_write = voxel_grid_image_write;
-    voxel_texture_write.dstBinding = 13;
+    voxel_texture_write.dstBinding = 8;
     voxel_texture_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
     VkWriteDescriptorSet descriptor_writes[] = {voxel_grid_storage_write, voxel_grid_image_write, voxel_texture_write};
@@ -987,20 +894,15 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
         {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT},
 
-        {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+        {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
         {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
-        {6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
-        {7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
-        {8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
-        {9, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
-        {10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
 
-        {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
-        {12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
-        {13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
+        {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
+        {7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+        {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
     };
 
-    VkDescriptorBindingFlagsEXT global_binding_flags[14] = {};
+    VkDescriptorBindingFlagsEXT global_binding_flags[9] = {};
     global_binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT_EXT;
 
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT layout_binding_flags_create_info = {};
@@ -1029,9 +931,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     VkDescriptorPoolSize descriptor_pool_sizes[] =
     {
         {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures + 6},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures + 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES}
     };
@@ -1077,7 +979,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // NOTE: Ignoring pipeline cache for now
     VK_CALL(vulkan_create_gbuffer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 0, &renderer.gbuffer_pipeline));
-    VK_CALL(vulkan_create_shading_compute_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.shading_compute_pipeline));
+    // VK_CALL(vulkan_create_shading_compute_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.shading_compute_pipeline));
     VK_CALL(vulkan_create_final_pass_pipeline(vulkan_context.device, renderer.global_pipeline_layout, vulkan_context.swapchain_render_pass, 0, &renderer.final_pass_pipeline));
     VK_CALL(vulkan_create_voxelizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.voxelization_render_pass, 0, &renderer.voxelizer_pipeline));
     VK_CALL(vulkan_create_voxelizer_compute_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.voxelizer_compute_pipeline));
@@ -1773,12 +1675,9 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_compute_command_buffer, &command_buffer_begin_info));
 
-        VkClearValue clear_values[5] = {};
+        VkClearValue clear_values[2] = {};
         clear_values[0].color = {0.0f, 0.0f, 0.0f, 0.0f};
-        clear_values[1].color = {0.0f, 0.0f, 0.0f, 0.0f};
-        clear_values[2].color = {0.0f, 0.0f, 0.0f, 0.0f};
-        clear_values[3].color = {MAX_MATERIALS};
-        clear_values[4].depthStencil = {0.0f, 0};
+        clear_values[1].depthStencil = {0.0f, 0};
 
         VkDescriptorSet descriptor_sets[] = {frame_resources->uniforms_descriptor_set, renderer.global_descriptor_set};
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.global_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
@@ -1912,8 +1811,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             VkRect2D scissor = render_pass_begin_info.renderArea;
             vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
-            // TODO: Voxel visualization is broken right now since we are writing to the uv coordinates attachment in the shader.
-            // Need to edit the shading pass compute shader to output the uv coordinates as the color if you want to see it!
+            // TODO: Voxel visualization is broken right now
             // if (renderer.draw_debug_voxel_grid)
             // {
             //     vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
@@ -1926,12 +1824,6 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             }
 
             vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
-        }
-
-        // NOTE: Shading pass
-        {
-            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.shading_compute_pipeline);
-            vkCmdDispatch(frame_resources->graphics_compute_command_buffer, renderer.render_width / 8, renderer.render_height / 8, 1);
         }
 
         // NOTE: Blit to swapchain render pass
