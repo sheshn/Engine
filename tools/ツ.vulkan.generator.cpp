@@ -668,11 +668,19 @@ void add_function(Function f)
 
 void add_needed_items(Tokenizer* tokenizer)
 {
+    add_macro(vulkan_define_macro_map["VK_FALSE"]);
+    add_macro(vulkan_define_macro_map["VK_TRUE"]);
     add_macro(vulkan_define_macro_map["VK_MAKE_VERSION"]);
     add_macro(vulkan_define_macro_map["VK_KHR_SURFACE_EXTENSION_NAME"]);
     add_macro(vulkan_define_macro_map["VK_EXT_DEBUG_UTILS_EXTENSION_NAME"]);
     add_macro(vulkan_define_macro_map["VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME"]);
     add_function(vulkan_function_map["PFN_vkCreateInstance"]);
+    add_function(vulkan_function_map["PFN_vkCreateShaderModule"]);
+    add_function(vulkan_function_map["PFN_vkDestroyShaderModule"]);
+    add_function(vulkan_function_map["PFN_vkCreateGraphicsPipelines"]);
+    add_function(vulkan_function_map["PFN_vkCreateComputePipelines"]);
+    add_enum(vulkan_enum_map["VkCullModeFlagBits"]);
+    add_enum(vulkan_enum_map["VkColorComponentFlagBits"]);
 
     b32 parsing = true;
     while (parsing)
@@ -936,25 +944,159 @@ void parse_shader_layout(Tokenizer* tokenizer, char* shader_code, u64 layout_ind
     }
 }
 
+enum Shader_Struct_Member_Annotation
+{
+    SHADER_STRUCT_MEMBER_ANNOTATION_POSITION,
+    SHADER_STRUCT_MEMBER_ANNOTATION_PER_INSTANCE,
+    SHADER_STRUCT_MEMBER_ANNOTATION_PER_VERTEX,
+    SHADER_STRUCT_MEMBER_ANNOTATION_FLAT
+};
+
+struct Shader_Struct_Member
+{
+    std::string type;
+    std::string name;
+
+    u64 name_end_index;
+    u64 semicolon_index;
+
+    std::vector<Shader_Struct_Member_Annotation> annotations;
+};
+
+struct Shader_Struct
+{
+    std::string name;
+    u64         struct_index;
+    u64         open_brace_index;
+    u64         close_brace_index;
+
+    std::vector<Shader_Struct_Member> members;
+};
+
+void parse_shader_struct_member_annotations(Tokenizer* tokenizer, std::vector<Shader_Struct_Member_Annotation>* annotations)
+{
+    if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACKET))
+    {
+        while (true)
+        {
+            Token annotation = get_token(tokenizer);
+            if (annotation.type == TOKEN_TYPE_CLOSE_BRACKET)
+            {
+                break;
+            }
+            else if (annotation.type == TOKEN_TYPE_COMMA)
+            {
+                continue;
+            }
+
+            if (token_equals(annotation, "position"))
+            {
+                annotations->push_back(SHADER_STRUCT_MEMBER_ANNOTATION_POSITION);
+            }
+            else if (token_equals(annotation, "per_instance"))
+            {
+                annotations->push_back(SHADER_STRUCT_MEMBER_ANNOTATION_PER_INSTANCE);
+            }
+            else if (token_equals(annotation, "flat"))
+            {
+                annotations->push_back(SHADER_STRUCT_MEMBER_ANNOTATION_FLAT);
+            }
+            else
+            {
+                fprintf(stderr, "ERROR(%s): unsupported annotation %.*s\n", __FUNCTION__, (u32)annotation.length, annotation.text);
+            }
+        }
+    }
+}
+
+void parse_shader_struct_member(Tokenizer* tokenizer, char* shader_code, Shader_Struct_Member* member)
+{
+    member->name = "";
+
+    b32 parsing = true;
+    while (parsing)
+    {
+        Token token = get_token(tokenizer);
+        switch (token.type)
+        {
+        case TOKEN_TYPE_SEMICOLON:
+        case TOKEN_TYPE_END_OF_STREAM:
+        {
+            member->semicolon_index = token.text + token.length - shader_code - 1;
+            parsing = false;
+        } break;
+        case TOKEN_TYPE_COLON:
+        {
+            parse_shader_struct_member_annotations(tokenizer, &member->annotations);
+        } break;
+        default:
+        {
+            member->name += std::string(token.text, token.length);
+            member->name_end_index = token.text + token.length - shader_code - 1;
+        } break;
+        }
+    }
+}
+
+void parse_shader_struct(Tokenizer* tokenizer, char* shader_code, u64 struct_index, std::unordered_map<std::string, Shader_Struct>* shader_structs)
+{
+    Token name = get_token(tokenizer);
+    if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
+    {
+        Shader_Struct s = {};
+        s.name = std::string(name.text, name.length);
+        s.struct_index = struct_index;
+
+        while (true)
+        {
+            Token member = get_token(tokenizer);
+            if (member.type == TOKEN_TYPE_CLOSE_BRACE)
+            {
+                s.close_brace_index = member.text + member.length - shader_code - 1;
+                break;
+            }
+
+            Shader_Struct_Member struct_member = {};
+            struct_member.type = std::string(member.text, member.length);
+
+            parse_shader_struct_member(tokenizer, shader_code, &struct_member);
+            s.members.push_back(struct_member);
+        }
+        shader_structs->insert({s.name, s});
+    }
+}
+
 struct Shader_Function
 {
     std::string shader_type;
     std::string name;
     u64         function_start_index;
-    u64         void_index;
+    u64         return_type_index;
+    u64         return_semicolon_index;
     u64         open_brace_index;
     u64         close_brace_index;
 
     std::vector<std::string> layouts;
+
+    b32 has_output;
+    b32 has_input;
+
+    Shader_Struct return_type;
+    Shader_Struct input_parameter;
+
+    std::string return_type_name;
+    std::string input_parameter_name;
+
+    u32 return_type_count;
+    u32 input_parameter_count;
 };
 
-std::vector<Shader_Function> shader_functions;
-
-void parse_shader(Tokenizer* tokenizer, char* shader_code, std::string shader_type, u64 function_start_index, std::vector<Shader_Function>* shader_functions)
+void parse_shader(Tokenizer* tokenizer, char* shader_code, std::string shader_type, u64 function_start_index, std::unordered_map<std::string, Shader_Function>* shader_functions, std::unordered_map<std::string, Shader_Struct> known_shader_structs)
 {
     Shader_Function function;
     function.shader_type = shader_type;
     function.function_start_index = function_start_index;
+    function.has_input = false;
 
     while (true)
     {
@@ -972,15 +1114,115 @@ void parse_shader(Tokenizer* tokenizer, char* shader_code, std::string shader_ty
         function.layouts.push_back(layout_name);
     }
 
-    Token void_token = get_token(tokenizer);
-    if (token_equals(void_token, "void"))
+    Token return_type_token = get_token(tokenizer);
+    if (return_type_token.type == TOKEN_TYPE_IDENTIFIER)
     {
-        function.void_index = void_token.text - shader_code;
+        if (token_equals(return_type_token, "void"))
+        {
+            function.return_type_index = return_type_token.text - shader_code;
+            function.has_output = false;
+        }
+        else
+        {
+            std::string struct_name = std::string(return_type_token.text, return_type_token.length);
+            if (known_shader_structs.find(struct_name) != known_shader_structs.end())
+            {
+                function.return_type = known_shader_structs[struct_name];
+                function.has_output = true;
+            }
+            else
+            {
+                fprintf(stderr, "ERROR(%s): undefined struct %s used as return value for shader %s\n", __FUNCTION__, struct_name.c_str(), function.name.c_str());
+                return;
+            }
+        }
+
+        if (function.shader_type == "geometry")
+        {
+            if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACKET))
+            {
+                Token out_count = get_token(tokenizer);
+                if (out_count.type == TOKEN_TYPE_NUMBER && eat_token(tokenizer, TOKEN_TYPE_CLOSE_BRACKET))
+                {
+                    function.return_type_count = (u32)out_count.u64;
+                }
+                else
+                {
+                    fprintf(stderr, "ERROR(%s): shader %s of type geometry needs to return an array\n", __FUNCTION__, function.name.c_str());
+                    return;
+                }
+            }
+            else
+            {
+                fprintf(stderr, "ERROR(%s): shader %s of type geometry needs to return an array\n", __FUNCTION__, function.name.c_str());
+                return;
+            }
+        }
 
         Token name = get_token(tokenizer);
-        if (name.type == TOKEN_TYPE_IDENTIFIER && eat_token(tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS) && eat_token(tokenizer, TOKEN_TYPE_CLOSE_PARENTHESIS))
+        if (name.type == TOKEN_TYPE_IDENTIFIER && eat_token(tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS))
         {
             function.name = std::string(name.text, name.length);
+
+            Token input_parameter = get_token(tokenizer);
+            if (input_parameter.type == TOKEN_TYPE_IDENTIFIER)
+            {
+                std::string struct_name = std::string(input_parameter.text, input_parameter.length);
+                if (known_shader_structs.find(struct_name) != known_shader_structs.end())
+                {
+                    function.input_parameter = known_shader_structs[struct_name];
+                }
+                else
+                {
+                    fprintf(stderr, "ERROR(%s): undefined struct %s used as input parameter to shader %s\n", __FUNCTION__, struct_name.c_str(), function.name.c_str());
+                    return;
+                }
+
+                Token input_name = get_token(tokenizer);
+                while (true)
+                {
+                    Token t = get_token(tokenizer);
+                    if (function.shader_type == "geometry")
+                    {
+                        if (t.type == TOKEN_TYPE_OPEN_BRACKET)
+                        {
+                            Token in_count = get_token(tokenizer);
+                            if (in_count.type == TOKEN_TYPE_NUMBER && eat_token(tokenizer, TOKEN_TYPE_CLOSE_BRACKET))
+                            {
+                                function.input_parameter_count = (u32)in_count.u64;
+                            }
+                            else
+                            {
+                                fprintf(stderr, "ERROR(%s): shader %s of type geometry needs to take in an array parameter\n", __FUNCTION__, function.name.c_str());
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            fprintf(stderr, "ERROR(%s): shader %s of type geometry needs to take in an array parameter\n", __FUNCTION__, function.name.c_str());
+                            return;
+                        }
+
+                        function.has_input = true;
+                        function.input_parameter_name = std::string(input_name.text, t.text - input_name.text);
+                        if (!eat_token(tokenizer, TOKEN_TYPE_CLOSE_PARENTHESIS))
+                        {
+                            return;
+                        }
+                        break;
+                    }
+                    else if (t.type == TOKEN_TYPE_CLOSE_PARENTHESIS)
+                    {
+                        function.has_input = true;
+                        function.input_parameter_name = std::string(input_name.text, t.text - input_name.text);
+                        break;
+                    }
+                }
+            }
+            else if (input_parameter.type != TOKEN_TYPE_CLOSE_PARENTHESIS)
+            {
+                return;
+            }
 
             Token open_brace_token = get_token(tokenizer);
             if (open_brace_token.type == TOKEN_TYPE_OPEN_BRACE)
@@ -999,16 +1241,440 @@ void parse_shader(Tokenizer* tokenizer, char* shader_code, std::string shader_ty
                     {
                         brace_count++;
                     }
+                    else if (t.type == TOKEN_TYPE_IDENTIFIER && token_equals(t, "return"))
+                    {
+                        function.return_type_index = t.text - shader_code;
+                        function.return_type_name = "";
+                        while (true)
+                        {
+                            Token n = get_token(tokenizer);
+                            if (n.type == TOKEN_TYPE_SEMICOLON || n.type == TOKEN_TYPE_END_OF_STREAM)
+                            {
+                                function.return_semicolon_index = n.text - shader_code;
+                                break;
+                            }
+                            function.return_type_name += std::string(n.text, n.length);
+                        }
+                    }
 
                     if (brace_count == 0)
                     {
                         function.close_brace_index = t.text - shader_code;
-                        shader_functions->push_back(function);
+                        shader_functions->insert({function.name, function});
                         break;
                     }
                 }
             }
         }
+    }
+}
+
+// TODO: All other pipeline states/fields
+struct Shader_Pipeline_Input_Assembly_State
+{
+    std::string topology;
+};
+
+struct Shader_Pipeline_Rasterization_State
+{
+    std::string cull_mode;
+    std::string front_face;
+};
+
+struct Shader_Pipeline_Blend_Attachment_State
+{
+    std::string blend_enable;
+    std::string color_write_mask;
+};
+
+struct Shader_Pipeline_Color_Blend_State
+{
+    std::vector<Shader_Pipeline_Blend_Attachment_State> attachments;
+};
+
+struct Shader_Pipeline_Depth_Stencil_State
+{
+    std::string depth_test_enable;
+    std::string depth_write_enable;
+    std::string depth_compare_op;
+};
+
+struct Shader_Pipeline
+{
+    std::string name;
+    u64         pipeline_index;
+    u64         open_brace_index;
+    u64         close_brace_index;
+
+    std::vector<std::string> shader_functions;
+
+    b32 has_color_blend_state;
+    b32 has_depth_stencil_state;
+
+    Shader_Pipeline_Input_Assembly_State input_assembly_state;
+    Shader_Pipeline_Rasterization_State  rasterization_state;
+    Shader_Pipeline_Color_Blend_State    color_blend_state;
+    Shader_Pipeline_Depth_Stencil_State  depth_stencil_state;
+};
+
+std::string pipeline_input_assembly_state_create_info(Shader_Pipeline_Input_Assembly_State state)
+{
+    std::string result = "\tVkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};\n";
+    result += "\tinput_assembly_state_create_info.topology = " + state.topology + ";\n";
+    return result;
+}
+
+std::string pipeline_rasterization_state_create_info(Shader_Pipeline_Rasterization_State state)
+{
+    std::string result = "\tVkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};\n";
+    result += "\trasterization_state_create_info.cullMode = " + state.cull_mode + ";\n";
+    result += "\trasterization_state_create_info.frontFace = " + state.front_face + ";\n";
+    return result;
+}
+
+std::string pipeline_color_blend_state_create_info(Shader_Pipeline_Color_Blend_State state)
+{
+    std::string result = "\tVkPipelineColorBlendAttachmentState color_blend_attachments[" + std::to_string(state.attachments.size()) + "] = {};\n";
+    for (u64 i = 0; i < state.attachments.size(); ++i)
+    {
+        result += "\tcolor_blend_attachments[" + std::to_string(i) + "].blendEnable = " + state.attachments[i].blend_enable + ";\n";
+        result += "\tcolor_blend_attachments[" + std::to_string(i) + "].colorWriteMask = " + state.attachments[i].color_write_mask + ";\n";
+    }
+
+    result += "\tVkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};\n";
+    result += "\tcolor_blend_state_create_info.attachmentCount = sizeof(color_blend_attachments)/sizeof(color_blend_attachments[0]);\n";
+    result += "\tcolor_blend_state_create_info.pAttachments = color_blend_attachments;\n";
+    return result;
+}
+
+std::string pipeline_depth_stencil_state_create_info(Shader_Pipeline_Depth_Stencil_State state)
+{
+    std::string result = "\tVkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};\n";
+    result += "\tdepth_stencil_state_create_info.depthTestEnable = " + state.depth_test_enable + ";\n";
+    result += "\tdepth_stencil_state_create_info.depthWriteEnable = " + state.depth_write_enable + ";\n";
+    result += "\tdepth_stencil_state_create_info.depthCompareOp = " + state.depth_compare_op + ";\n";
+    return result;
+}
+
+Shader_Pipeline_Input_Assembly_State create_default_input_assembly_state()
+{
+    return {"VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST"};
+}
+
+Shader_Pipeline_Rasterization_State create_default_rasterization_state()
+{
+    return {"VK_CULL_MODE_NONE", "VK_FRONT_FACE_COUNTER_CLOCKWISE"};
+}
+
+Shader_Pipeline_Blend_Attachment_State create_default_blend_attachment_state()
+{
+    return {"VK_FALSE", "VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT"};
+}
+
+Shader_Pipeline_Color_Blend_State create_default_color_blend_state()
+{
+    return {};
+}
+
+Shader_Pipeline_Depth_Stencil_State create_default_depth_stencil_state()
+{
+    return {"VK_FALSE", "VK_FALSE", "VK_COMPARE_OP_NEVER"};
+}
+
+Shader_Pipeline create_default_pipeline()
+{
+    Shader_Pipeline pipeline = {};
+
+    pipeline.has_color_blend_state = false;
+    pipeline.has_depth_stencil_state = false;
+
+    pipeline.input_assembly_state = create_default_input_assembly_state();
+    pipeline.rasterization_state = create_default_rasterization_state();
+    return pipeline;
+}
+
+std::vector<std::string> parse_shader_pipeline_shaders(Tokenizer* tokenizer, std::string pipeline_name)
+{
+    std::vector<std::string> shaders;
+
+    if (eat_token(tokenizer, TOKEN_TYPE_EQUAL) && eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACKET))
+    {
+        while (true)
+        {
+            Token t = get_token(tokenizer);
+            if (t.type == TOKEN_TYPE_CLOSE_BRACKET)
+            {
+                break;
+            }
+            if (t.type == TOKEN_TYPE_IDENTIFIER)
+            {
+                shaders.push_back(std::string(t.text, t.length));
+            }
+        }
+    }
+    if (!eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s shaders field missing semicolon\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    return shaders;
+}
+
+Shader_Pipeline_Input_Assembly_State parse_shader_pipeline_input_assembly_state(Tokenizer* tokenizer, std::string pipeline_name)
+{
+    Shader_Pipeline_Input_Assembly_State state = create_default_input_assembly_state();
+    if (eat_token(tokenizer, TOKEN_TYPE_EQUAL) && eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
+    {
+        while (true)
+        {
+            Token t = get_token(tokenizer);
+            if (t.type == TOKEN_TYPE_CLOSE_BRACE)
+            {
+                break;
+            }
+
+            if (token_equals(t, "topology") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.topology = std::string(value.text, value.length);
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s missing equal/brace for field input_assembly_state\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    if (!eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s input_assembly_state field missing semicolon\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    return state;
+}
+
+Shader_Pipeline_Rasterization_State parse_shader_pipeline_rasterization_state(Tokenizer* tokenizer, std::string pipeline_name)
+{
+    Shader_Pipeline_Rasterization_State state = create_default_rasterization_state();
+    if (eat_token(tokenizer, TOKEN_TYPE_EQUAL) && eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
+    {
+        while (true)
+        {
+            Token t = get_token(tokenizer);
+            if (t.type == TOKEN_TYPE_CLOSE_BRACE)
+            {
+                break;
+            }
+
+            if (token_equals(t, "cull_mode") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.cull_mode = std::string(value.text, value.length);
+            }
+            else if (token_equals(t, "front_face") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.front_face = std::string(value.text, value.length);
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s missing equal/brace for field rasterization_state\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    if (!eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s rasterization_state field missing semicolon\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    return state;
+}
+
+Shader_Pipeline_Blend_Attachment_State parse_shader_pipeline_blend_attachment_state(Tokenizer* tokenizer, std::string pipeline_name)
+{
+    Shader_Pipeline_Blend_Attachment_State state = create_default_blend_attachment_state();
+    if (eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
+    {
+        b32 parsing = true;
+        while (parsing)
+        {
+            Token t = get_token(tokenizer);
+            if (t.type == TOKEN_TYPE_CLOSE_BRACE)
+            {
+                break;
+            }
+
+            if (token_equals(t, "blend_enable") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.blend_enable = std::string(value.text, value.length);
+            }
+            else if (token_equals(t, "color_write_mask") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token begin = get_token(tokenizer);
+                while (true)
+                {
+                    Token value = get_token(tokenizer);
+                    if (value.type == TOKEN_TYPE_COMMA)
+                    {
+                        state.color_write_mask = std::string(begin.text, value.text - begin.text);
+                        break;
+                    }
+                    else if (value.type == TOKEN_TYPE_CLOSE_BRACE)
+                    {
+                        parsing = false;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s missing brace for field blend_attachment_state\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    return state;
+}
+
+Shader_Pipeline_Color_Blend_State parse_shader_pipeline_color_blend_state(Tokenizer* tokenizer, std::string pipeline_name)
+{
+    Shader_Pipeline_Color_Blend_State state = create_default_color_blend_state();
+    if (eat_token(tokenizer, TOKEN_TYPE_EQUAL) && eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACKET))
+    {
+        while (true)
+        {
+            state.attachments.push_back(parse_shader_pipeline_blend_attachment_state(tokenizer, pipeline_name));
+
+            Token t = get_token(tokenizer);
+            if (t.type == TOKEN_TYPE_CLOSE_BRACKET)
+            {
+                break;
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s missing equal/bracket for field color_blend_state\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    if (!eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s color_blend_state field missing semicolon\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    return state;
+}
+
+Shader_Pipeline_Depth_Stencil_State parse_shader_pipeline_depth_stencil_state(Tokenizer* tokenizer, std::string pipeline_name)
+{
+    Shader_Pipeline_Depth_Stencil_State state = create_default_depth_stencil_state();
+    if (eat_token(tokenizer, TOKEN_TYPE_EQUAL) && eat_token(tokenizer, TOKEN_TYPE_OPEN_BRACE))
+    {
+        while (true)
+        {
+            Token t = get_token(tokenizer);
+            if (t.type == TOKEN_TYPE_CLOSE_BRACE)
+            {
+                break;
+            }
+
+            if (token_equals(t, "depth_test_enable") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.depth_test_enable = std::string(value.text, value.length);
+            }
+            else if (token_equals(t, "depth_write_enable") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.depth_write_enable = std::string(value.text, value.length);
+            }
+            else if (token_equals(t, "depth_compare_op") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.depth_compare_op = std::string(value.text, value.length);
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s missing equal/brace for field depth_stencil_state\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    if (!eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s depth_stencil_state field missing semicolon\n", __FUNCTION__, pipeline_name.c_str());
+    }
+    return state;
+}
+
+void parse_shader_pipeline(Tokenizer* tokenizer, char* shader_code, u64 pipeline_index, std::vector<Shader_Pipeline>* shader_pipelines)
+{
+    Shader_Pipeline pipeline = create_default_pipeline();
+    pipeline.pipeline_index = pipeline_index;
+
+    Token name = get_token(tokenizer);
+    if (name.type == TOKEN_TYPE_IDENTIFIER)
+    {
+        pipeline.name = std::string(name.text, name.length);
+
+        Token open_brace_token = get_token(tokenizer);
+        if (open_brace_token.type == TOKEN_TYPE_OPEN_BRACE)
+        {
+            pipeline.open_brace_index = open_brace_token.text - shader_code;
+
+            u32 brace_count = 1;
+            while (true)
+            {
+                Token member = get_token(tokenizer);
+                if (member.type == TOKEN_TYPE_CLOSE_BRACE)
+                {
+                    brace_count--;
+                }
+                else if (member.type == TOKEN_TYPE_OPEN_BRACE)
+                {
+                    brace_count++;
+                }
+
+                // NOTE: Ignoring multisample
+                if (member.type == TOKEN_TYPE_IDENTIFIER)
+                {
+                    if (token_equals(member, "shaders"))
+                    {
+                        pipeline.shader_functions = parse_shader_pipeline_shaders(tokenizer, pipeline.name);
+                    }
+                    else if (token_equals(member, "input_assembly_state"))
+                    {
+                        pipeline.input_assembly_state = parse_shader_pipeline_input_assembly_state(tokenizer, pipeline.name);
+                    }
+                    else if (token_equals(member, "rasterization_state"))
+                    {
+                        pipeline.rasterization_state = parse_shader_pipeline_rasterization_state(tokenizer, pipeline.name);
+                    }
+                    else if (token_equals(member, "color_blend_state"))
+                    {
+                        pipeline.has_color_blend_state = true;
+                        pipeline.color_blend_state = parse_shader_pipeline_color_blend_state(tokenizer, pipeline.name);
+                    }
+                    else if (token_equals(member, "depth_stencil_state"))
+                    {
+                        pipeline.has_depth_stencil_state = true;
+                        pipeline.depth_stencil_state = parse_shader_pipeline_depth_stencil_state(tokenizer, pipeline.name);
+                    }
+                    else
+                    {
+                        fprintf(stderr, "ERROR(%s): pipeline %s specifies unsupported pipeline state (%.*s)\n", __FUNCTION__, pipeline.name.c_str(), (u32)member.length, member.text);
+                    }
+                }
+
+                if (brace_count == 0)
+                {
+                    pipeline.close_brace_index = member.text - shader_code;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (eat_token(tokenizer, TOKEN_TYPE_SEMICOLON))
+    {
+        shader_pipelines->push_back(pipeline);
+    }
+    else
+    {
+        fprintf(stderr, "ERROR: Missing semicolon for pipeline: %s\n", pipeline.name.c_str());
     }
 }
 
@@ -1034,6 +1700,28 @@ std::wstring get_shader_file_extension(std::string shader_type)
     return ext;
 }
 
+std::string get_shader_stage_bit(std::string shader_type)
+{
+    std::string bit = "";
+    if (shader_type == "vertex")
+    {
+        bit = "VK_SHADER_STAGE_VERTEX_BIT";
+    }
+    else if (shader_type == "fragment")
+    {
+        bit = "VK_SHADER_STAGE_FRAGMENT_BIT";
+    }
+    else if (shader_type == "geometry")
+    {
+        bit = "VK_SHADER_STAGE_GEOMETRY_BIT";
+    }
+    else if (shader_type == "compute")
+    {
+        bit = "VK_SHADER_STAGE_COMPUTE_BIT";
+    }
+    return bit;
+}
+
 char hex_charset[] = "0123456789ABCDEF";
 
 std::string bytes_to_string(char* bytes, u64 size)
@@ -1051,16 +1739,432 @@ std::string bytes_to_string(char* bytes, u64 size)
     return result;
 }
 
-std::string compile_shaders(std::wstring compiler_path, std::wstring optimizer_path, char* shader_code, std::vector<Shader_Function> shader_functions, std::unordered_map<std::string, Shader_Layout> shader_layouts)
+std::string get_geometry_shader_layout_in(Shader_Function function)
+{
+    // NOTE: Ignoring the other ones for now
+    if (function.input_parameter_count == 1)
+    {
+        return "points";
+    }
+    else if (function.input_parameter_count == 2)
+    {
+        return "lines";
+    }
+    else if (function.input_parameter_count == 3)
+    {
+        return "triangles";
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): unknown input count to geometry shader %s (count: %u)", __FUNCTION__, function.name.c_str(), (u32)function.input_parameter_count);
+    }
+
+    return "";
+}
+
+std::string get_geometry_shader_layout_out(Shader_Function function)
+{
+    // NOTE: This is not necessarily correct!
+    if (function.return_type_count == 1)
+    {
+        return "points";
+    }
+    else if (function.return_type_count == 2)
+    {
+        return "line_strip";
+    }
+    else if (function.return_type_count >= 3)
+    {
+        return "triangle_strip";
+    }
+    else
+    {
+        fprintf(stderr, "ERROR(%s): unknown output count from geometry shader %s (count: %u)", __FUNCTION__, function.name.c_str(), (u32)function.return_type_count);
+    }
+
+    return "";
+}
+
+std::string generate_new_shader_function(std::string code, Shader_Function function)
+{
+    std::string new_shader_code = "";
+
+    if (function.shader_type == "geometry")
+    {
+        new_shader_code += "layout(" + get_geometry_shader_layout_in(function) + ") in;\n";
+        new_shader_code += "layout(" + get_geometry_shader_layout_out(function) + ", max_vertices = " + std::to_string(function.return_type_count) + ") out;\n";
+    }
+
+    u64 offset = 0;
+    if (function.has_input)
+    {
+        std::string brackets = "";
+        if (function.shader_type == "geometry")
+        {
+            brackets = "[]";
+        }
+
+        for (u64 i = 0; i < function.input_parameter.members.size(); ++i)
+        {
+            Shader_Struct_Member m = function.input_parameter.members[i];
+            if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_POSITION) != m.annotations.end())
+            {
+                offset++;
+            }
+            else
+            {
+                new_shader_code += "layout(location = " + std::to_string(i - offset) + ")" + (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_FLAT) != m.annotations.end() ? " flat in " : " in ") + m.type + " in_" + m.name + brackets + ";\n";
+            }
+        }
+    }
+
+    offset = 0;
+    if (function.has_output)
+    {
+        for (u64 i = 0; i < function.return_type.members.size(); ++i)
+        {
+            Shader_Struct_Member m = function.return_type.members[i];
+            if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_POSITION) != m.annotations.end())
+            {
+                offset++;
+            }
+            else
+            {
+                new_shader_code += "layout(location = " + std::to_string(i - offset) + ")" + (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_FLAT) != m.annotations.end() ? " flat out " : " out ") + m.type + " out_" + m.name + ";\n";
+            }
+        }
+    }
+
+    new_shader_code += "void main()\n{\n";
+
+    if (function.has_input)
+    {
+        if (function.shader_type == "geometry")
+        {
+            new_shader_code += function.input_parameter.name + " " + function.input_parameter_name + "[" + std::to_string(function.input_parameter_count) + "];\n";
+            new_shader_code += "for (u32 i = 0; i < " + std::to_string(function.input_parameter_count) + "; ++i)\n{\n";
+
+            for (u64 i = 0; i < function.input_parameter.members.size(); ++i)
+            {
+                Shader_Struct_Member m = function.input_parameter.members[i];
+                if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_POSITION) == m.annotations.end())
+                {
+                    new_shader_code += function.input_parameter_name + "[i]." + m.name + " = " + "in_" + m.name + "[i];\n";
+                }
+            }
+            new_shader_code += "}\n";
+        }
+        else
+        {
+            new_shader_code += function.input_parameter.name + " " + function.input_parameter_name + ";\n";
+            for (u64 i = 0; i < function.input_parameter.members.size(); ++i)
+            {
+                Shader_Struct_Member m = function.input_parameter.members[i];
+                if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_POSITION) == m.annotations.end())
+                {
+                    new_shader_code += function.input_parameter_name + "." + m.name + " = " + "in_" + m.name + ";\n";
+                }
+            }
+        }
+    }
+
+
+    if (function.has_output)
+    {
+        new_shader_code += code.substr(function.open_brace_index - function.function_start_index + 1, function.return_type_index - function.open_brace_index - 1) + "\n";
+        if (function.shader_type == "geometry")
+        {
+            new_shader_code += "for (u32 i = 0; i < " + std::to_string(function.return_type_count) + "; ++i)\n{\n";
+
+            for (u64 i = 0; i < function.return_type.members.size(); ++i)
+            {
+                Shader_Struct_Member m = function.return_type.members[i];
+                std::string out_variable = "out_" + m.name;
+
+                if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_POSITION) != m.annotations.end())
+                {
+                    out_variable = "gl_Position";
+                }
+
+                new_shader_code += out_variable + " = " + function.return_type_name + "[i]" + "." + m.name + ";\n";
+            }
+            new_shader_code += "EmitVertex();\n}\nEndPrimitive();\n";
+        }
+        else
+        {
+            for (u64 i = 0; i < function.return_type.members.size(); ++i)
+            {
+                Shader_Struct_Member m = function.return_type.members[i];
+                std::string out_variable = "out_" + m.name;
+
+                if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_POSITION) != m.annotations.end())
+                {
+                    out_variable = "gl_Position";
+                }
+
+                new_shader_code += out_variable + " = " + function.return_type_name + "." + m.name + ";\n";
+            }
+        }
+        new_shader_code += code.substr(function.return_semicolon_index - function.function_start_index + 1, function.close_brace_index - function.return_semicolon_index) + "\n";
+    }
+    else
+    {
+        new_shader_code += code.substr(function.open_brace_index - function.function_start_index + 1, function.close_brace_index - function.open_brace_index) + "\n";
+    }
+
+    return new_shader_code;
+}
+
+u32 sizeof_type(std::string type)
+{
+    u32 result = 0;
+    if (type == "s32" || type == "u32" || type == "f32")
+    {
+        result = 4;
+    }
+    else if (type == "f64" || type == "uv2" || type == "sv2" || type == "v2")
+    {
+        result = 8;
+    }
+    else if (type == "uv3" || type == "sv3" || type == "v3")
+    {
+        result = 12;
+    }
+    else if (type == "uv4" || type == "sv4" || type == "v4")
+    {
+        result = 16;
+    }
+    else if (type == "m3x3")
+    {
+        result = 36;
+    }
+    else if (type == "m4x4")
+    {
+        result = 64;
+    }
+    return result;
+}
+
+std::string type_to_vk_format(std::string type)
 {
     std::string result = "";
-    for (u64 i = 0; i < shader_functions.size(); ++i)
+    if (type == "uv2")
+    {
+        result = "VK_FORMAT_R32G32_UINT";
+    }
+    else if (type == "v2")
+    {
+        result = "VK_FORMAT_R32G32_SFLOAT";
+    }
+    else if (type == "v3")
+    {
+        result = "VK_FORMAT_R32G32B32_SFLOAT";
+    }
+    else if (type == "v4")
+    {
+        result = "VK_FORMAT_R32G32B32A32_SFLOAT";
+    }
+    return result;
+}
+
+std::string generate_pipeline_create_function(Shader_Pipeline pipeline, std::unordered_map<std::string, Shader_Function> shader_functions)
+{
+    Shader_Function vertex_shader, compute_shader;
+
+    b32 vertex_shader_found = false;
+    b32 compute_shader_found = false;
+    for (u64 i = 0; i < pipeline.shader_functions.size(); ++i)
+    {
+        std::string shader_name = pipeline.shader_functions[i];
+        if (shader_functions.find(shader_name) != shader_functions.end())
+        {
+            if (shader_functions[shader_name].shader_type == "vertex")
+            {
+                vertex_shader = shader_functions[shader_name];
+                vertex_shader_found = true;
+                break;
+            }
+            else if (shader_functions[shader_name].shader_type == "compute")
+            {
+                compute_shader = shader_functions[shader_name];
+                compute_shader_found = true;
+            }
+        }
+    }
+    if (!vertex_shader_found && !compute_shader_found)
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s must have a vertex shader or be a compute pipeline\n", __FUNCTION__, pipeline.name.c_str());
+        return "";
+    }
+    else if (compute_shader_found && pipeline.shader_functions.size() > 1)
+    {
+        fprintf(stderr, "ERROR(%s): pipeline %s must only have one compute shader\n", __FUNCTION__, pipeline.name.c_str());
+        return "";
+    }
+
+    std::string result = "";
+    std::transform(pipeline.name.begin(), pipeline.name.end(), pipeline.name.begin(), ::tolower);
+    if (vertex_shader_found)
+    {
+        result += "internal VkResult vulkan_create_" + pipeline.name + "(VkDevice device, VkPipelineLayout pipeline_layout, VkRenderPass render_pass, u32 subpass, VkPipeline* pipeline)\n{\n";
+        result += pipeline_input_assembly_state_create_info(pipeline.input_assembly_state);
+        result += pipeline_rasterization_state_create_info(pipeline.rasterization_state);
+        if (pipeline.has_color_blend_state)
+        {
+            result += pipeline_color_blend_state_create_info(pipeline.color_blend_state);
+        }
+        if (pipeline.has_depth_stencil_state)
+        {
+            result += pipeline_depth_stencil_state_create_info(pipeline.depth_stencil_state);
+        }
+        result += "\tVkResult result;\n";
+
+        result += "\tVkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};\n";
+        if (vertex_shader.has_input)
+        {
+            u32 binding_size = 0;
+            s32 current_binding = -1;
+            Shader_Struct_Member_Annotation last_annotation = SHADER_STRUCT_MEMBER_ANNOTATION_POSITION;
+
+            std::string binding_descriptions = "\tVkVertexInputBindingDescription vertex_binding_descriptions[] = {";
+            std::string attribute_descriptions = "\tVkVertexInputAttributeDescription vertex_attribute_descriptions[] = {";
+
+            for (u64 i = 0; i < vertex_shader.input_parameter.members.size(); ++i)
+            {
+                Shader_Struct_Member_Annotation current_annotation = SHADER_STRUCT_MEMBER_ANNOTATION_PER_VERTEX;
+                Shader_Struct_Member m = vertex_shader.input_parameter.members[i];
+                if (std::find(m.annotations.begin(), m.annotations.end(), SHADER_STRUCT_MEMBER_ANNOTATION_PER_INSTANCE) != m.annotations.end())
+                {
+                    current_annotation = SHADER_STRUCT_MEMBER_ANNOTATION_PER_INSTANCE;
+                }
+
+                if (current_annotation != last_annotation || i == vertex_shader.input_parameter.members.size() - 1)
+                {
+                    if (current_binding != -1)
+                    {
+                        std::string line_ending = "}, ";
+                        if (i == vertex_shader.input_parameter.members.size() - 1)
+                        {
+                            binding_size += sizeof_type(m.type);
+                            line_ending = "}};\n";
+                        }
+                        binding_descriptions += "{" + std::to_string(current_binding) + ", " + std::to_string(binding_size) + ", " + (last_annotation == SHADER_STRUCT_MEMBER_ANNOTATION_PER_INSTANCE ? "VK_VERTEX_INPUT_RATE_INSTANCE" : "VK_VERTEX_INPUT_RATE_VERTEX") + line_ending;
+                    }
+                    if (i != vertex_shader.input_parameter.members.size() - 1)
+                    {
+                        ++current_binding;
+                        binding_size = 0;
+                    }
+                }
+
+                if (current_binding != -1 || i == vertex_shader.input_parameter.members.size() - 1)
+                {
+                    std::string line_ending = std::to_string(binding_size) + "}, ";
+                    attribute_descriptions += "{" + std::to_string(i) + ", " + std::to_string(current_binding) + ", " + type_to_vk_format(m.type) + ", ";
+                    if (i == vertex_shader.input_parameter.members.size() - 1)
+                    {
+                        line_ending = std::to_string(binding_size - sizeof_type(m.type)) + "}};\n";
+                    }
+                    attribute_descriptions += line_ending;
+                }
+
+                binding_size += sizeof_type(m.type);
+                last_annotation = current_annotation;
+            }
+            result += binding_descriptions + attribute_descriptions;
+            result += "\tvertex_input_state_create_info.vertexBindingDescriptionCount = sizeof(vertex_binding_descriptions) / sizeof(vertex_binding_descriptions[0]);\n";
+            result += "\tvertex_input_state_create_info.pVertexBindingDescriptions = vertex_binding_descriptions;\n";
+            result += "\tvertex_input_state_create_info.vertexAttributeDescriptionCount = sizeof(vertex_attribute_descriptions) / sizeof(vertex_attribute_descriptions[0]);\n";
+            result += "\tvertex_input_state_create_info.pVertexAttributeDescriptions = vertex_attribute_descriptions;\n";
+        }
+
+        result += "\tVkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};\n";
+        result += "\tVkPipelineDynamicStateCreateInfo dynamic_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};\n";
+        result += "\tdynamic_state_create_info.dynamicStateCount = 2;\n";
+        result += "\tdynamic_state_create_info.pDynamicStates = dynamic_states;\n";
+
+        result += "\tVkPipelineViewportStateCreateInfo viewport_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};\n";
+        result += "\tviewport_state_create_info.viewportCount = 1;\n";
+        result += "\tviewport_state_create_info.scissorCount = 1;\n";
+
+        result += "\tVkPipelineMultisampleStateCreateInfo multisample_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};\n";
+        result += "\tmultisample_state_create_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;\n";
+
+        result += "\tVkShaderModule shader_modules[" + std::to_string(pipeline.shader_functions.size()) + "];\n";
+        result += "\tVkPipelineShaderStageCreateInfo shader_stages[" + std::to_string(pipeline.shader_functions.size()) + "] = {};\n";
+        for (u64 i = 0; i < pipeline.shader_functions.size(); ++i)
+        {
+            result += "\tresult = vkCreateShaderModule(device, &" + pipeline.shader_functions[i] + "_create_info, NULL, shader_modules + " + std::to_string(i) + ");\n";
+            result += "\tif (result != VK_SUCCESS)\n\t{\n\t\treturn result;\n\t}\n";
+            result += "\tshader_stages[" + std::to_string(i) + "].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;\n";
+            result += "\tshader_stages[" + std::to_string(i) + "].pName = \"main\";\n";
+            result += "\tshader_stages[" + std::to_string(i) + "].stage = " + get_shader_stage_bit(shader_functions[pipeline.shader_functions[i]].shader_type) + ";\n";
+            result += "\tshader_stages[" + std::to_string(i) + "].module = shader_modules[" + std::to_string(i) + "];\n";
+        }
+
+        result += "\tVkGraphicsPipelineCreateInfo pipeline_create_info = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};\n";
+        result += "\tpipeline_create_info.stageCount = sizeof(shader_stages) / sizeof(shader_stages[0]);\n";
+        result += "\tpipeline_create_info.pStages = shader_stages;\n";
+        result += "\tpipeline_create_info.pVertexInputState = &vertex_input_state_create_info;\n";
+        result += "\tpipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;\n";
+        result += "\tpipeline_create_info.pDynamicState = &dynamic_state_create_info;\n";
+        result += "\tpipeline_create_info.pViewportState = &viewport_state_create_info;\n";
+        result += "\tpipeline_create_info.pRasterizationState = &rasterization_state_create_info;\n";
+        result += "\tpipeline_create_info.pMultisampleState = &multisample_state_create_info;\n";
+        result += "\tpipeline_create_info.layout = pipeline_layout;\n";
+        result += "\tpipeline_create_info.renderPass = render_pass;\n";
+        result += "\tpipeline_create_info.subpass = subpass;\n";
+        if (pipeline.has_color_blend_state)
+        {
+            result += "\tpipeline_create_info.pColorBlendState = &color_blend_state_create_info;\n";
+        }
+        if (pipeline.has_depth_stencil_state)
+        {
+            result += "\tpipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;\n";
+        }
+
+        result += "\tresult = vkCreateGraphicsPipelines(device, NULL, 1, &pipeline_create_info, NULL, pipeline);\n";
+        for (u64 i = 0; i < pipeline.shader_functions.size(); ++i)
+        {
+            result += "\tvkDestroyShaderModule(device, shader_modules[" + std::to_string(i) + "], NULL);\n";
+        }
+
+        result += "\treturn result;\n";
+        result += "}\n";
+    }
+    else
+    {
+        result += "internal VkResult vulkan_create_" + pipeline.name + "(VkDevice device, VkPipelineLayout pipeline_layout, VkPipeline* pipeline)\n{\n";
+        result += "\tVkShaderModule compute_shader_module;\n";
+        result += "\tVkResult result = vkCreateShaderModule(device, &" + pipeline.shader_functions[0] + "_create_info, NULL, &compute_shader_module);\n";
+
+        result += "\tVkComputePipelineCreateInfo compute_pipeline_create_info = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};\n";
+        result += "\tcompute_pipeline_create_info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};\n";
+        result += "\tcompute_pipeline_create_info.stage.pName = \"main\";\n";
+        result += "\tcompute_pipeline_create_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;\n";
+        result += "\tcompute_pipeline_create_info.stage.module = compute_shader_module;\n";
+        result += "\tcompute_pipeline_create_info.layout = pipeline_layout;\n";
+        result += "\tresult = vkCreateComputePipelines(device, NULL, 1, &compute_pipeline_create_info, NULL, pipeline);\n";
+
+        result += "\tvkDestroyShaderModule(device, compute_shader_module, NULL);\n";
+
+        result += "\treturn result;\n";
+        result += "}\n";
+    }
+
+    return result;
+}
+
+std::string compile_shaders(std::wstring compiler_path, std::wstring optimizer_path, char* shader_code, std::string shader_header, std::unordered_map<std::string, Shader_Function> shader_functions, std::unordered_map<std::string, Shader_Layout> shader_layouts, std::unordered_map<std::string, Shader_Struct> shader_structs, std::vector<Shader_Pipeline> shader_pipelines)
+{
+    std::string result = "";
+    for (auto sf_it : shader_functions)
     {
         std::string code = std::string(shader_code);
         std::unordered_map<std::string, Shader_Layout> layouts = shader_layouts;
 
         // TODO: Should probably check for duplicate function names!
-        Shader_Function function = shader_functions[i];
+        Shader_Function function = sf_it.second;
         for (u64 j = 0; j < function.layouts.size(); ++j)
         {
             if (shader_layouts.find(function.layouts[j]) == shader_layouts.end() || shader_layouts[function.layouts[j]].layout_index > function.function_start_index)
@@ -1092,11 +2196,23 @@ std::string compile_shaders(std::wstring compiler_path, std::wstring optimizer_p
             }
         }
 
-        for (u64 j = 0; j < shader_functions.size(); ++j)
+        for (auto it : shader_structs)
         {
-            if (i != j)
+            Shader_Struct s = it.second;
+            for (u64 k = 0; k < s.members.size(); ++k)
             {
-                Shader_Function f = shader_functions[j];
+                for (u64 l = s.members[k].name_end_index + 1; l < s.members[k].semicolon_index; ++l)
+                {
+                    code[l] = ' ';
+                }
+            }
+        }
+
+        for (auto sf : shader_functions)
+        {
+            if (sf.second.name != sf_it.second.name)
+            {
+                Shader_Function f = sf.second;
                 for (u64 index = f.function_start_index; index <= f.close_brace_index; ++index)
                 {
                     if (!is_whitespace(code[index]))
@@ -1107,8 +2223,23 @@ std::string compile_shaders(std::wstring compiler_path, std::wstring optimizer_p
             }
         }
 
-        code.replace(function.void_index + 5, function.name.size(), "main");
-        code.replace(function.function_start_index, function.void_index - function.function_start_index, "");
+        for (u64 j = 0; j < shader_pipelines.size(); ++j)
+        {
+            Shader_Pipeline p = shader_pipelines[j];
+            for (u64 index = p.pipeline_index; index <= p.close_brace_index + 1; ++index)
+            {
+                if (!is_whitespace(code[index]))
+                {
+                    code[index] = ' ';
+                }
+            }
+        }
+
+        std::string new_function = generate_new_shader_function(code.substr(function.function_start_index, function.close_brace_index + 1 - function.function_start_index), function);
+        code.replace(function.function_start_index, function.close_brace_index + 1 - function.function_start_index, "");
+        code.insert(function.function_start_index, new_function);
+
+        code = shader_header + code;
 
         std::wstring filename = std::wstring(function.name.begin(), function.name.end()) + L".tsd";
         write_file(filename.c_str(), code.c_str());
@@ -1131,6 +2262,11 @@ std::string compile_shaders(std::wstring compiler_path, std::wstring optimizer_p
         }
     }
 
+    for (u64 i = 0; i < shader_pipelines.size(); ++i)
+    {
+        result += generate_pipeline_create_function(shader_pipelines[i], shader_functions);
+    }
+
     _wsystem(L"del *.spv *.tsd");
     return result;
 }
@@ -1140,8 +2276,10 @@ std::string compile_shader_file(std::wstring compiler_path, std::wstring optimiz
     char* shader_code = read_file(filepath.c_str());
     Tokenizer tokenizer = {shader_code};
 
-    std::vector<Shader_Function> shader_functions;
+    std::unordered_map<std::string, Shader_Function> shader_functions;
     std::unordered_map<std::string, Shader_Layout> shader_layouts;
+    std::unordered_map<std::string, Shader_Struct> shader_structs;
+    std::vector<Shader_Pipeline> shader_pipelines;
 
     b32 parsing = true;
     while (parsing)
@@ -1160,15 +2298,47 @@ std::string compile_shader_file(std::wstring compiler_path, std::wstring optimiz
             {
                 parse_shader_layout(&tokenizer, shader_code, token.text - shader_code, &shader_layouts);
             }
+            else if (token_equals(token, "struct"))
+            {
+                parse_shader_struct(&tokenizer, shader_code, token.text - shader_code, &shader_structs);
+            }
+            else if (token_equals(token, "pipeline"))
+            {
+                parse_shader_pipeline(&tokenizer, shader_code, token.text - shader_code, &shader_pipelines);
+            }
             else if ((token_equals(token, "vertex") || token_equals(token, "fragment") || token_equals(token, "geometry") || token_equals(token, "compute")) && eat_token(&tokenizer, TOKEN_TYPE_OPEN_PARENTHESIS))
             {
-                parse_shader(&tokenizer, shader_code, std::string(token.text, token.length), token.text - shader_code, &shader_functions);
+                parse_shader(&tokenizer, shader_code, std::string(token.text, token.length), token.text - shader_code, &shader_functions, shader_structs);
             }
         } break;
         }
     }
 
-    return compile_shaders(compiler_path, optimizer_path, shader_code, shader_functions, shader_layouts);
+    std::string shader_header = R"(
+        #version 450
+        #extension GL_EXT_nonuniform_qualifier : enable
+        #extension GL_EXT_samplerless_texture_functions : enable
+
+        #define s32 int
+        #define u32 uint
+        #define f32 float
+        #define f64 double
+
+        #define v2 vec2
+        #define v3 vec3
+        #define v4 vec4
+        #define quat v4
+        #define uv2 uvec2
+        #define uv3 uvec3
+        #define sv2 ivec2
+        #define sv3 ivec3
+        #define m3x3 mat3
+        #define m4x4 mat4
+
+        #define PI 3.14159265358979323846
+    )";
+
+    return compile_shaders(compiler_path, optimizer_path, shader_code, shader_header, shader_functions, shader_layouts, shader_structs, shader_pipelines);
 }
 
 std::string generate_shaders(std::wstring shader_directory, std::wstring shader_tools_path)

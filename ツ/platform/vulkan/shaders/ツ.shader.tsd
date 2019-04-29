@@ -1,25 +1,3 @@
-#version 450
-#extension GL_EXT_nonuniform_qualifier : enable
-#extension GL_EXT_samplerless_texture_functions : enable
-
-#define s32 int
-#define u32 uint
-#define f32 float
-#define f64 double
-
-#define v2 vec2
-#define v3 vec3
-#define v4 vec4
-#define quat v4
-#define uv2 uvec2
-#define uv3 uvec3
-#define sv2 ivec2
-#define sv3 ivec3
-#define m3x3 mat3
-#define m4x4 mat4
-
-#define PI 3.14159265358979323846
-
 #define INVALID_MATERIAL_ID (1 << 15)
 
 struct Material
@@ -59,41 +37,24 @@ struct Frame_Uniforms
     v2  inverse_render_dimensions;
 };
 
-u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
+quat tangent_space_to_quat(v3 tangent, v3 bitangent, v3 normal)
 {
-    return (index_3d.z * dimension.x * dimension.y) + (index_3d.y * dimension.x) + index_3d.x;
+    quat q;
+    q.x = normal.y - bitangent.z;
+    q.y = tangent.z - normal.x;
+    q.z = bitangent.x - tangent.y;
+    q.w = 1 + tangent.x + bitangent.y + normal.z;
+
+    return normalize(q);
 }
 
-uv3 index_1d_to_index_3d(u32 index, uv3 dimension)
+m3x3 quat_to_tangent_space(quat q)
 {
-    u32 z = index / (dimension.x * dimension.y);
-    index -= (z * dimension.x * dimension.y);
-    return uv3(index % dimension.x, index / dimension.y, z);
-}
+    v3 tangent   = v3(1, 0, 0) + v3(-2,  2,  2) * q.y * q.yxw + v3(-2, -2,  2) * q.z * q.zwx;
+    v3 bitangent = v3(0, 1, 0) + v3( 2, -2,  2) * q.z * q.wzy + v3( 2, -2, -2) * q.x * q.yxw;
+    v3 normal    = v3(0, 0, 1) + v3( 2,  2, -2) * q.x * q.zwx + v3(-2,  2, -2) * q.y * q.wzy;
 
-u32 encode_v4_color_as_u32(v4 color)
-{
-    // TODO: Tune this value
-    f32 hdr_range = 10;
-    f32 hdr = length(color.rgb);
-    color.rgb /= hdr;
-
-    uv3 c = uv3(color.rgb * 255.0);
-    u32 h = u32(clamp(hdr / hdr_range, 0, 1) * 127.0);
-    u32 a = color.a > 0 ? 1 : 0;
-
-    return (h << 24) | (c.r << 16) | (c.g << 8) | (c.b) | (a << 31);
-}
-
-v4 decode_u32_color_as_v4(u32 color)
-{
-    // TODO: Tune this value
-    f32 hdr_range = 10;
-    f32 hdr = ((color >> 24) & 0x0000007F) / 127.0;
-
-    v4 result = v4((color >> 16) & 0x000000FF, (color >> 8) & 0X000000FF, color & 0X000000FF, (color >> 31) & 0x00000001);
-    result.rgb *= hdr * hdr_range / 255.0;
-    return result;
+    return m3x3(tangent, bitangent, normal);
 }
 
 v3 depth_to_position(f32 depth, v2 uv, m4x4 projection, m4x4 inverse_view_projection)
@@ -104,91 +65,85 @@ v3 depth_to_position(f32 depth, v2 uv, m4x4 projection, m4x4 inverse_view_projec
     return world_space.xyz / world_space.w;
 }
 
-layout Default_Vertex_Layout
+layout Global_Layout
 {
-    layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+    layout(set = 0, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 
-    layout(location = 0) in uv2 in_instance_data;
-    layout(location = 1) in v3 in_position;
-    layout(location = 2) in v3 in_normal;
-    layout(location = 3) in v4 in_tangent;
-    layout(location = 4) in v2 in_uv0;
+    layout(set = 1, binding = 0) uniform sampler texture_2d_sampler;
+    layout(set = 1, binding = 1) uniform texture2D textures_2d[];
+    layout(set = 1, binding = 2) buffer material_buffer { Material materials[]; };
+    layout(set = 1, binding = 3) buffer transform_buffer { Transform xforms[]; };
 
-    layout(location = 0) flat out u32 out_material_id;
-    layout(location = 1) out v3 out_normal;
-    layout(location = 2) out v3 out_tangent;
-    layout(location = 3) out v3 out_bitangent;
-    layout(location = 4) out v2 out_uv0;
+    layout(set = 1, binding = 4, rgba16) uniform image2D main_color_image;
+    layout(set = 1, binding = 5) uniform texture2D main_color_texture;
+    layout(set = 1, binding = 6) uniform texture2D uv_coordinates_attachment;
+    layout(set = 1, binding = 7) uniform texture2D uv_gradients_attachment;
+    layout(set = 1, binding = 8) uniform texture2D tangent_frame_attachment;
+    layout(set = 1, binding = 9) uniform utexture2D material_id_attachment;
+    layout(set = 1, binding = 10) uniform texture2D depth_attachment;
+
+    layout(set = 1, binding = 11) buffer voxel_buffer { Voxel_Data voxels[]; };
+    layout(set = 1, binding = 12, rgba8) uniform image3D voxel_image;
+    layout(set = 1, binding = 13) uniform sampler3D voxel_texture;
 };
 
-vertex(Default_Vertex_Layout) void default_vertex_shader()
+struct Default_Vertex_In
 {
-    Transform xform = xforms[in_instance_data.x];
-    gl_Position = frame_uniforms.view_projection * xform.model * v4(in_position.xyz, 1.0);
+    uv2 instance_data: [per_instance];
 
-    out_material_id = in_instance_data.y & 0x7FFF;
-    if (in_tangent.w == -1)
+    v3 position;
+    v3 normal;
+    v4 tangent;
+    v2 uv0;
+};
+
+struct Default_Fragment_In
+{
+    v4 vertex_position: [position];
+
+    u32 material_id: [flat];
+
+    v3 normal;
+    v3 tangent;
+    v3 bitangent;
+    v2 uv0;
+};
+
+struct Default_Fragment_Out
+{
+    v2  uv_coordinates;
+    v4  uv_gradients;
+    v4  tangent_frame;
+    u32 material_id;
+};
+
+vertex(Global_Layout) Default_Fragment_In default_vertex_shader(Default_Vertex_In stage_in)
+{
+    Default_Fragment_In stage_out;
+    stage_out.vertex_position = frame_uniforms.view_projection * xforms[stage_in.instance_data.x].model * v4(stage_in.position.xyz, 1.0);
+    stage_out.material_id = stage_in.instance_data.y;
+    stage_out.normal = normalize(m3x3(xforms[stage_in.instance_data.x].model) * stage_in.normal);
+    stage_out.tangent = normalize(m3x3(xforms[stage_in.instance_data.x].model) * stage_in.tangent.xyz);
+    stage_out.bitangent = cross(stage_out.normal, stage_out.tangent) * stage_in.tangent.w;
+    stage_out.uv0 = stage_in.uv0;
+    return stage_out;
+}
+
+fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fragment_In stage_in)
+{
+    v3 normal = normalize(stage_in.normal);
+    v3 tangent = normalize(stage_in.tangent);
+    v3 bitangent = normalize(stage_in.bitangent);
+
+    Default_Fragment_Out stage_out =
     {
-        out_material_id |= (1 << 15);
-    }
-
-    out_normal = normalize(m3x3(xform.model) * in_normal);
-    out_tangent = normalize(m3x3(xform.model) * in_tangent.xyz);
-    out_bitangent = cross(out_normal, out_tangent) * in_tangent.w;
-    out_uv0 = in_uv0;
+        fract(stage_in.uv0),
+        v4(dFdxFine(stage_in.uv0), dFdyFine(stage_in.uv0)),
+        tangent_space_to_quat(tangent, bitangent, normal),
+        stage_in.material_id
+    };
+    return stage_out;
 }
-
-layout Default_Fragment_Layout
-{
-    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
-    layout(set = 0, binding = 1) uniform texture2D textures_2d[];
-    layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
-    layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
-
-    layout(location = 0) flat in u32 in_material_id;
-    layout(location = 1) in v3 in_normal;
-    layout(location = 2) in v3 in_tangent;
-    layout(location = 3) in v3 in_bitangent;
-    layout(location = 4) in v2 in_uv0;
-
-    layout(location = 0) out v4 out_uv_coordinates;
-    layout(location = 1) out v4 out_uv_gradients;
-    layout(location = 2) out v4 out_tangent_frame;
-    layout(location = 3) out u32 out_material_id;
-};
-
-fragment(Default_Fragment_Layout) void default_fragment_shader()
-{
-    // TODO: Pack tangent frame as quaternion properly
-    v3 normal = normalize(in_normal);
-    v3 tangent = normalize(in_tangent);
-    v3 bitangent = normalize(in_bitangent);
-    out_tangent_frame = v4(tangent, 1);
-
-    out_uv_coordinates = v4(fract(in_uv0), in_normal.xy);
-    out_uv_gradients = v4(dFdxFine(in_uv0), dFdyFine(in_uv0));
-    out_material_id = in_material_id;
-}
-
-layout Default_Compute_Layout
-{
-    layout (local_size_x = 8, local_size_y = 8) in;
-
-    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
-    layout(set = 0, binding = 1) uniform texture2D textures_2d[];
-    layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
-    layout(set = 0, binding = 6) uniform sampler3D voxel_texture;
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
-
-    layout(set = 2, binding = 0, rgba16) uniform image2D main_color_texture;
-    layout(set = 2, binding = 1) uniform texture2D uv_coordinates_attachment;
-    layout(set = 2, binding = 2) uniform texture2D uv_gradients_attachment;
-    layout(set = 2, binding = 3) uniform texture2D tangent_frame_attachment;
-    layout(set = 2, binding = 4) uniform utexture2D material_id_attachment;
-    layout(set = 2, binding = 5) uniform texture2D depth_attachment;
-};
 
 #define MAX_DIFFUSE_CONES 6
 v3 diffuse_cone_directions[MAX_DIFFUSE_CONES] =
@@ -283,25 +238,23 @@ v4 calculate_indirect_lighting(Frame_Uniforms frame_uniforms, sampler3D voxel_te
     return v4(result, clamp(1 - indirect_diffuse.a, 0, 1));
 }
 
-compute(Default_Compute_Layout) void default_compute_shader()
+layout Default_Compute_Layout
+{
+    layout (local_size_x = 8, local_size_y = 8) in;
+};
+
+compute(Global_Layout, Default_Compute_Layout) void shading_compute_shader()
 {
     sv2 pixel_location = sv2(gl_GlobalInvocationID.xy);
 
-    u32 material_id = u32(texelFetch(material_id_attachment, pixel_location, 0).r) & 0x7FFF;
+    u32 material_id = u32(texelFetch(material_id_attachment, pixel_location, 0).r);
     if (material_id != INVALID_MATERIAL_ID)
     {
-        v4 uv_coordinates_attachment_color = texelFetch(uv_coordinates_attachment, pixel_location, 0);
-        v2 uv0 = uv_coordinates_attachment_color.xy;
+        v2 uv0 = texelFetch(uv_coordinates_attachment, pixel_location, 0).xy;
         v4 dxdy = texelFetch(uv_gradients_attachment, pixel_location, 0);
 
-        // TODO: Pack tangent frame as quaternion properly
-        f32 tangent_frame_handedness = bool(material_id & (1 << 15)) ? -1.0f : 1.0f;
-        v3 tangent_frame_normal;
-        tangent_frame_normal.xy = uv_coordinates_attachment_color.zw;
-        tangent_frame_normal.z = sqrt(1 - clamp(uv_coordinates_attachment_color.z * uv_coordinates_attachment_color.z + uv_coordinates_attachment_color.w * uv_coordinates_attachment_color.w, 0, 1));
-        v3 tangent_frame_tangent = texelFetch(tangent_frame_attachment, pixel_location, 0).xyz;
-        v3 tangent_frame_bitangent = cross(tangent_frame_normal, tangent_frame_tangent) * tangent_frame_handedness;
-        m3x3 tangent_frame_matrix = m3x3(tangent_frame_tangent, tangent_frame_bitangent, tangent_frame_normal);
+        quat tangent_frame = texelFetch(tangent_frame_attachment, pixel_location, 0);
+        m3x3 tangent_frame_matrix = quat_to_tangent_space(tangent_frame);
 
         f32 depth = texelFetch(depth_attachment, pixel_location, 0).x;
         v2 screen_uv = (pixel_location + 0.5f) * frame_uniforms.inverse_render_dimensions;
@@ -326,33 +279,34 @@ compute(Default_Compute_Layout) void default_compute_shader()
         tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
         v3 world_space_normal = normalize(tangent_frame_matrix * tangent_space_normal);
 
-        v4 indirect_lighting = calculate_indirect_lighting(frame_uniforms, voxel_texture, world_space_position, world_space_normal, albedo, specular, roughness);
-        v4 out_color = v4(indirect_lighting.rgb * indirect_lighting.a, 1);
+        // v4 indirect_lighting = calculate_indirect_lighting(frame_uniforms, voxel_texture, world_space_position, world_space_normal, albedo, specular, roughness);
+        // v4 out_color = v4(indirect_lighting.rgb * indirect_lighting.a, 1);
 
-        imageStore(main_color_texture, pixel_location, out_color);
+        v4 out_color = v4(albedo, 1);
+
+        imageStore(main_color_image, pixel_location, out_color);
     }
 }
 
-layout Final_Pass_Vertex_Layout
+struct Final_Pass_Fragment_In
 {
-    layout(location = 0) out v2 out_uv;
+    v4 vertex_position: [position];
+
+    v2 uv;
 };
 
-vertex(Final_Pass_Vertex_Layout) void final_pass_vertex_shader()
+struct Final_Pass_Fragment_Out
 {
-    out_uv = v2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-    gl_Position = v4(out_uv * 2.0 - 1.0, 0, 1.0);
+    v4 color;
+};
+
+vertex(Global_Layout) Final_Pass_Fragment_In final_pass_vertex_shader()
+{
+    Final_Pass_Fragment_In stage_out;
+    stage_out.uv = v2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    stage_out.vertex_position = v4(stage_out.uv * 2.0 - 1.0, 0, 1.0);
+    return stage_out;
 }
-
-layout Final_Pass_Fragment_Layout
-{
-    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
-    layout(set = 0, binding = 1) uniform texture2D color0_attachment;
-
-    layout(location = 0) in v2 in_uv;
-
-    layout(location = 0) out v4 out_color;
-};
 
 v3 aces_tonemap(v3 color)
 {
@@ -374,62 +328,88 @@ v3 aces_tonemap(v3 color)
     return clamp(color, 0, 1);
 }
 
-fragment(Final_Pass_Fragment_Layout) void final_pass_fragment_shader()
+fragment(Global_Layout) Final_Pass_Fragment_Out final_pass_fragment_shader(Final_Pass_Fragment_In stage_in)
 {
-    v3 color = texture(sampler2D(color0_attachment, texture_2d_sampler), in_uv).xyz;
-    color *= 3; // TODO: Automatic exposure
+    v3 color = texture(sampler2D(main_color_texture, texture_2d_sampler), stage_in.uv).xyz;
+    color *= 2; // TODO: Automatic exposure
 
     color = aces_tonemap(color);
 
-    out_color = v4(color, 1);
+    Final_Pass_Fragment_Out stage_out = {v4(color, 1)};
+    return stage_out;
 }
 
-layout Voxelizer_Vertex_Layout
+struct Voxelizer_Geometry_In
 {
-    layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+    v4 vertex_position: [position];
 
-    layout(location = 0) in uv2 in_instance_data;
-    layout(location = 1) in v3 in_position;
-    layout(location = 2) in v3 in_normal;
-    layout(location = 3) in v4 in_tangent;
-    layout(location = 4) in v2 in_uv0;
+    u32 material_id: [flat];
 
-    layout(location = 0) flat out uv2 out_instance_data;
-    layout(location = 1) out v3 out_normal;
-    layout(location = 2) out v2 out_uv0;
+    v3 normal;
+    v2 uv0;
 };
 
-vertex(Voxelizer_Vertex_Layout) void voxelizer_vertex_shader()
+struct Voxelizer_Geometry_Out
 {
-    Transform xform = xforms[in_instance_data.x];
-    gl_Position = xform.model * v4(in_position.xyz, 1.0);
+    v4 vertex_position: [position];
 
-    out_instance_data = in_instance_data;
-    out_normal = normalize(m3x3(xform.model) * in_normal);
-    out_uv0 = in_uv0;
+    u32 material_id: [flat];
+
+    v3 position;
+    v3 normal;
+    v2 uv0;
+};
+
+u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
+{
+    return (index_3d.z * dimension.x * dimension.y) + (index_3d.y * dimension.x) + index_3d.x;
 }
 
-layout Voxelizer_Geometry_Layout
+uv3 index_1d_to_index_3d(u32 index, uv3 dimension)
 {
-    layout(triangles) in;
-    layout(triangle_strip, max_vertices = 3) out;
+    u32 z = index / (dimension.x * dimension.y);
+    index -= (z * dimension.x * dimension.y);
+    return uv3(index % dimension.x, index / dimension.y, z);
+}
 
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
-
-    layout(location = 0) flat in uv2 in_instance_data[];
-    layout(location = 1) in v3 in_normal[];
-    layout(location = 2) in v2 in_uv0[];
-
-    layout(location = 0) flat out uv2 out_instance_data;
-    layout(location = 1) out v3 out_position;
-    layout(location = 2) out v3 out_normal;
-    layout(location = 3) out v2 out_uv0;
-};
-
-geometry(Voxelizer_Geometry_Layout) void voxelizer_geometry_shader()
+u32 encode_v4_color_as_u32(v4 color)
 {
-    v3 normal = abs(in_normal[0] + in_normal[1] + in_normal[2]);
+    // TODO: Tune this value
+    f32 hdr_range = 10;
+    f32 hdr = length(color.rgb);
+    color.rgb /= hdr;
+
+    uv3 c = uv3(color.rgb * 255.0);
+    u32 h = u32(clamp(hdr / hdr_range, 0, 1) * 127.0);
+    u32 a = color.a > 0 ? 1 : 0;
+
+    return (h << 24) | (c.r << 16) | (c.g << 8) | (c.b) | (a << 31);
+}
+
+v4 decode_u32_color_as_v4(u32 color)
+{
+    // TODO: Tune this value
+    f32 hdr_range = 10;
+    f32 hdr = ((color >> 24) & 0x0000007F) / 127.0;
+
+    v4 result = v4((color >> 16) & 0x000000FF, (color >> 8) & 0X000000FF, color & 0X000000FF, (color >> 31) & 0x00000001);
+    result.rgb *= hdr * hdr_range / 255.0;
+    return result;
+}
+
+vertex(Global_Layout) Voxelizer_Geometry_In voxelizer_vertex_shader(Default_Vertex_In stage_in)
+{
+    Voxelizer_Geometry_In stage_out;
+    stage_out.vertex_position = xforms[stage_in.instance_data.x].model * v4(stage_in.position.xyz, 1.0);
+    stage_out.material_id = stage_in.instance_data.y;
+    stage_out.normal = normalize(m3x3(xforms[stage_in.instance_data.x].model) * stage_in.normal);
+    stage_out.uv0 = stage_in.uv0;
+    return stage_out;
+}
+
+geometry(Global_Layout) Voxelizer_Geometry_Out[3] voxelizer_geometry_shader(Voxelizer_Geometry_In stage_in[3])
+{
+    v3 normal = abs(stage_in[0].normal + stage_in[1].normal + stage_in[2].normal);
     u32 max_index = normal.y > normal.x ? 1 : 0;
     max_index = normal.z > normal[max_index] ? 2 : max_index;
 
@@ -455,41 +435,26 @@ geometry(Voxelizer_Geometry_Layout) void voxelizer_geometry_shader()
     positions[1].xy += normalize(s0 - s1);
     positions[2].xy += normalize(s1 - s2);
 
+    Voxelizer_Geometry_Out stage_out[3];
     for (u32 i = 0; i < 3; ++i)
     {
-        out_instance_data = in_instance_data[i];
-        out_position = gl_in[i].gl_Position.xyz;
-        out_normal = in_normal[i];
-        out_uv0 = in_uv0[i];
+        stage_out[i].material_id = stage_in[i].material_id;
+        stage_out[i].position = gl_in[i].gl_Position.xyz;
+        stage_out[i].normal = stage_in[i].normal;
+        stage_out[i].uv0 = stage_in[i].uv0;
 
-        gl_Position = v4(positions[i].xy / frame_uniforms.voxel_grid_resolution, 1, 1);
-        EmitVertex();
+        stage_out[i].vertex_position = v4(positions[i].xy / frame_uniforms.voxel_grid_resolution, 1, 1);
     }
-    EndPrimitive();
+    return stage_out;
 }
 
-layout Voxelizer_Fragment_Layout
+fragment(Global_Layout) void voxelizer_fragment_shader(Voxelizer_Geometry_Out stage_in)
 {
-    layout(set = 0, binding = 0) uniform sampler texture_2d_sampler;
-    layout(set = 0, binding = 1) uniform texture2D textures_2d[];
-    layout(set = 0, binding = 2) buffer material_buffer { Material materials[]; };
-    layout(set = 0, binding = 3) buffer transform_buffer { Transform xforms[]; };
-    layout(set = 0, binding = 4) buffer voxel_buffer { Voxel_Data voxels[]; };
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
-
-    layout(location = 0) flat in uv2 in_instance_data;
-    layout(location = 1) in v3 in_position;
-    layout(location = 2) in v3 in_normal;
-    layout(location = 3) in v2 in_uv0;
-};
-
-fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
-{
-    v3 uvw = 0.5 * ((in_position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size) + 0.5f;
+    v3 uvw = 0.5 * ((stage_in.position - frame_uniforms.voxel_grid_origin) / frame_uniforms.voxel_grid_resolution / frame_uniforms.voxel_size) + 0.5f;
     if (uvw == clamp(uvw, 0, 1))
     {
-        Material material = materials[in_instance_data.y];
-        v4 color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), in_uv0) * material.base_color_factor;
+        Material material = materials[stage_in.material_id];
+        v4 color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), stage_in.uv0) * material.base_color_factor;
         u32 encoded_color = encode_v4_color_as_u32(color);
 
         u32 index = index_3d_to_index_1d(uv3(floor(uvw * frame_uniforms.voxel_grid_resolution)), uv3(frame_uniforms.voxel_grid_resolution));
@@ -500,13 +465,9 @@ fragment(Voxelizer_Fragment_Layout) void voxelizer_fragment_shader()
 layout Voxelizer_Compute_Layout
 {
     layout (local_size_x = 256) in;
-
-    layout(set = 0, binding = 4) buffer voxel_buffer { Voxel_Data voxels[]; };
-    layout(set = 0, binding = 5, rgba8) uniform image3D voxel_texture;
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
 };
 
-compute(Voxelizer_Compute_Layout) void voxelizer_compute_shader()
+compute(Global_Layout, Voxelizer_Compute_Layout) void voxelizer_compute_shader()
 {
     uv3 uvw = index_1d_to_index_3d(gl_GlobalInvocationID.x, uv3(frame_uniforms.voxel_grid_resolution));
     v4 color = decode_u32_color_as_v4(voxels[gl_GlobalInvocationID.x].color);
@@ -514,84 +475,141 @@ compute(Voxelizer_Compute_Layout) void voxelizer_compute_shader()
     if (color.a > 0)
     {
         // TODO: Smooth from prevous data if the voxel grid origin moved?
-        imageStore(voxel_texture, sv3(uvw), color);
+        imageStore(voxel_image, sv3(uvw), color);
     }
     else
     {
-        imageStore(voxel_texture, sv3(uvw), v4(0));
+        imageStore(voxel_image, sv3(uvw), v4(0));
     }
 
     voxels[gl_GlobalInvocationID.x].color = 0;
 }
 
-layout DEBUG_Voxel_Visualizer_Vertex_Layout
+struct DEBUG_Voxel_Visualizer_Geometry_In
 {
-    layout(set = 0, binding = 6) uniform sampler3D voxel_texture;
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+    v4 vertex_position: [position];
 
-    layout(location = 0) out v4 out_color;
+    v4 color;
 };
 
-vertex(DEBUG_Voxel_Visualizer_Vertex_Layout) void DEBUG_voxel_visualizer_vertex_shader()
+struct DEBUG_Voxel_Visualizer_Fragment_Out
+{
+    v2  uv_coordinates;
+    v4  uv_gradients;
+    v4  tangent_frame;
+    u32 material_id;
+};
+
+vertex(Global_Layout) DEBUG_Voxel_Visualizer_Geometry_In DEBUG_voxel_visualizer_vertex_shader()
 {
     uv3 uvw = index_1d_to_index_3d(gl_VertexIndex, uv3(frame_uniforms.voxel_grid_resolution));
-    gl_Position = v4(uvw, 1);
 
-    out_color = textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0);
+    DEBUG_Voxel_Visualizer_Geometry_In stage_out;
+    stage_out.vertex_position = v4(uvw, 1);
+    stage_out.color = textureLod(voxel_texture, v3(uvw) / frame_uniforms.voxel_grid_resolution, 0);
+    return stage_out;
 }
 
-layout DEBUG_Voxel_Visualizer_Geometry_Layout
+geometry(Global_Layout) DEBUG_Voxel_Visualizer_Geometry_In[14] DEBUG_voxel_visualizer_geometry_shader(DEBUG_Voxel_Visualizer_Geometry_In stage_in[1])
 {
-    layout(points) in;
-    layout(triangle_strip, max_vertices = 14) out;
-
-    layout(set = 1, binding = 0) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
-
-    layout(location = 0) in v4 in_color[];
-
-    layout(location = 0) out v4 out_color;
-};
-
-geometry(DEBUG_Voxel_Visualizer_Geometry_Layout) void DEBUG_voxel_visualizer_geometry_shader()
-{
-    if (in_color[0].a > 0)
+    if (stage_in[0].color.a > 0)
     {
+        DEBUG_Voxel_Visualizer_Geometry_In stage_out[14];
         for (u32 i = 0; i < 14; ++i)
         {
-            out_color = in_color[0];
-
-            gl_Position.xyz = (gl_in[0].gl_Position.xyz / frame_uniforms.voxel_grid_resolution * 2 - 1) * frame_uniforms.voxel_grid_resolution;
+            stage_out[i].color = stage_in[0].color;
+            stage_out[i].vertex_position.xyz = (gl_in[0].gl_Position.xyz / frame_uniforms.voxel_grid_resolution * 2 - 1) * frame_uniforms.voxel_grid_resolution;
 
             // NOTE: Cube vertex position from index
-            gl_Position.xyz += (v3((0x287A & (1 << i)) != 0, (0x02AF & (1 << i)) != 0, (0x31E3 & (1 << i)) != 0) - v3(0, 1, 0)) * 2;
+            stage_out[i].vertex_position.xyz += (v3((0x287A & (1 << i)) != 0, (0x02AF & (1 << i)) != 0, (0x31E3 & (1 << i)) != 0) - v3(0, 1, 0)) * 2;
 
-            gl_Position.xyz *= frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_size / frame_uniforms.voxel_grid_resolution;
-            gl_Position = frame_uniforms.view_projection * v4(gl_Position.xyz + frame_uniforms.voxel_grid_origin, 1);
-
-            EmitVertex();
+            stage_out[i].vertex_position.xyz *= frame_uniforms.voxel_grid_resolution * frame_uniforms.voxel_size / frame_uniforms.voxel_grid_resolution;
+            stage_out[i].vertex_position = frame_uniforms.view_projection * v4(stage_out[i].vertex_position.xyz + frame_uniforms.voxel_grid_origin, 1);
         }
-        EndPrimitive();
+        return stage_out;
     }
 }
 
-layout DEBUG_Voxel_Visualizer_Fragment_Layout
+fragment(Global_Layout) DEBUG_Voxel_Visualizer_Fragment_Out DEBUG_voxel_visualizer_fragment_shader(DEBUG_Voxel_Visualizer_Geometry_In stage_in)
 {
-    layout(location = 0) in v4 in_color;
-
-    layout(location = 0) out v2 out_uv_coordinates;
-    layout(location = 1) out v4 out_uv_gradients;
-    layout(location = 2) out v4 out_tangent_frame;
-    layout(location = 3) out u32 out_material_id;
-};
-
-fragment(DEBUG_Voxel_Visualizer_Fragment_Layout) void DEBUG_voxel_visualizer_fragment_shader()
-{
-    out_uv_coordinates = v2(0);
-    out_tangent_frame = v4(0);
-    out_material_id = 0;
-
     // NOTE: For this debug visualization we just put the color in the uv_gradients attachment.
     // We need to change the shading pass compute shader manually in order to see this.
     // TODO: Pass debug visualization as a uniform to the shading pass compute shader and output uv_gradients as the final color if it is set?
-    out_uv_gradients = v4(in_color.rgb, 1);
+    DEBUG_Voxel_Visualizer_Fragment_Out stage_out =
+    {
+        v2(0),
+        v4(in_color.rgb, 1),
+        v4(0),
+        0
+    };
+    return stage_out;
 }
+
+
+pipeline Gbuffer_Pipeline
+{
+    shaders = [default_vertex_shader, default_fragment_shader];
+
+    rasterization_state = {
+        cull_mode  = VK_CULL_MODE_FRONT_BIT,
+        front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE
+    };
+
+    color_blend_state = [
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT},
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT},
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT},
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT}
+    ];
+
+    depth_stencil_state = {
+        depth_test_enable  = VK_TRUE,
+        depth_write_enable = VK_TRUE,
+        depth_compare_op   = VK_COMPARE_OP_GREATER_OR_EQUAL
+    };
+};
+
+pipeline Shading_Compute_Pipeline
+{
+    shaders = [shading_compute_shader];
+};
+
+pipeline Final_Pass_Pipeline
+{
+    shaders = [final_pass_vertex_shader, final_pass_fragment_shader];
+
+    rasterization_state = {
+        cull_mode  = VK_CULL_MODE_FRONT_BIT,
+        front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE
+    };
+
+    color_blend_state = [
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT}
+    ];
+};
+
+pipeline Voxelizer_Pipeline
+{
+    shaders = [voxelizer_vertex_shader, voxelizer_geometry_shader, voxelizer_fragment_shader];
+};
+
+pipeline Voxelizer_Compute_Pipeline
+{
+    shaders = [voxelizer_compute_shader];
+};
+
+pipeline DEBUG_Voxel_Visualizer_Pipeline
+{
+    shaders = [DEBUG_voxel_visualizer_vertex_shader, DEBUG_voxel_visualizer_geometry_shader, DEBUG_voxel_visualizer_fragment_shader];
+
+    input_assembly_state = {
+        topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+    };
+
+    color_blend_state = [
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT},
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT},
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT},
+        {color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT}
+    ];
+};
