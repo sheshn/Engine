@@ -549,3 +549,14 @@ internal v4 lerp(v4 a, v4 b, f32 t)
 {
     return a + t * (b - a);
 }
+
+internal f32 round_down(f32 value)
+{
+    return (f32)((u32)value);
+}
+
+internal f32 round_up(f32 value)
+{
+    f32 v = (f32)((u32)value);
+    return v + (v < value);
+}

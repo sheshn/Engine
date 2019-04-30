@@ -2330,8 +2330,10 @@ std::string compile_shader_file(std::wstring compiler_path, std::wstring optimiz
         #define quat v4
         #define uv2 uvec2
         #define uv3 uvec3
+        #define uv4 uvec4
         #define sv2 ivec2
         #define sv3 ivec3
+        #define sv4 ivec4
         #define m3x3 mat3
         #define m4x4 mat4
 
