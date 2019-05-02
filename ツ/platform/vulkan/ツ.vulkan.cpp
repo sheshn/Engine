@@ -197,6 +197,12 @@ struct Vulkan_Texture
     VkImageView image_view;
 };
 
+#define MAX_2D_TEXTURES          2048
+#define MAX_DRAW_CALLS_PER_FRAME 16384
+#define MAX_INSTANCES_PER_FRAME  (MAX_DRAW_CALLS_PER_FRAME * 2)
+#define MAX_LIGHTS               1024
+#define MAX_LIGHTS_PER_CLUSTER   64
+
 struct Draw_Instance_Data
 {
     u32 xform_index;
@@ -205,10 +211,13 @@ struct Draw_Instance_Data
 
 struct Frame_Uniforms
 {
+    m4x4 view;
     m4x4 projection;
     m4x4 view_projection;
     m4x4 inverse_projection;
     m4x4 inverse_view_projection;
+
+    m4x4 DEBUG_view;
 
     v4  camera_position;
     v4  voxel_grid_origin_resolution;
@@ -221,11 +230,9 @@ struct Frame_Uniforms
 
     f32 camera_near;
     f32 camera_far;
-};
 
-#define MAX_2D_TEXTURES          2048
-#define MAX_DRAW_CALLS_PER_FRAME 16384
-#define MAX_INSTANCES_PER_FRAME  (MAX_DRAW_CALLS_PER_FRAME * 2)
+    u32 light_count;
+};
 
 // TODO: Fix transfer queue bug!!!
 #define TRANSFER_MEMORY_SIZE megabytes(128)
@@ -241,6 +248,7 @@ struct Frame_Uniforms
 #define DRAW_CALLS_MEMORY_SIZE     (MAX_DRAW_CALLS_PER_FRAME * sizeof(VkDrawIndexedIndirectCommand) + sizeof(u32))
 #define DRAW_INSTANCE_MEMORY_SIZE  (MAX_INSTANCES_PER_FRAME * sizeof(Draw_Instance_Data))
 #define FRAME_UNIFORMS_MEMORY_SIZE (sizeof(Frame_Uniforms))
+#define LIGHT_STORAGE_MEMORY_SIZE  (MAX_LIGHTS * sizeof(Light))
 
 struct Frame_Resources
 {
@@ -252,7 +260,7 @@ struct Frame_Resources
     VkSemaphore render_finished_semaphore;
     u32         swapchain_image_index;
 
-    VkDescriptorSet uniforms_descriptor_set;
+    VkDescriptorSet descriptor_set;
 
     Memory_Arena draw_command_arena;
     u32*         draw_call_count;
@@ -266,6 +274,9 @@ struct Frame_Resources
     Frame_Uniforms* uniforms;
     u64             uniforms_offset;
 
+    Memory_Arena   light_arena;
+    u64            light_storage_offset;
+
     // NOTE: This is the total space the draw commands, instances, and uniforms take.
     // (Including extra padding to align to minUniformBufferOffsetAlignment)
     u64 data_memory_size;
@@ -277,6 +288,7 @@ struct Renderer
 
     VkPipelineLayout global_pipeline_layout;
     VkPipeline       clusterizer_pipeline;
+    VkPipeline       cluster_light_culling_pipeline;
     VkPipeline       main_pipeline;
     VkPipeline       voxelizer_pipeline;
     VkPipeline       voxelizer_compute_pipeline;
@@ -304,7 +316,6 @@ struct Renderer
     VkBuffer            storage_buffer;
     u64                 storage_materials_offset;
     u64                 storage_xforms_offset;
-    u64                 storage_cluster_aabbs_offset;
 
     Vulkan_Memory_Block texture_memory_block;
     u64                 texture_memory_used;
@@ -313,6 +324,10 @@ struct Renderer
     VkFramebuffer       main_framebuffer;
     Vulkan_Texture      main_color_attachment;
     Vulkan_Texture      main_depth_attachment;
+
+    Vulkan_Memory_Block cluster_storage_memory_block;
+    VkBuffer            cluster_storage_buffer;
+    b32                 cluster_grid_needs_update;
 
     Vulkan_Memory_Block voxel_storage_memory_block;
     VkBuffer            voxel_storage_buffer;
@@ -336,10 +351,9 @@ struct Renderer
 
     VkFramebuffer voxelization_pass_framebuffer;
 
-    u32 render_width;
-    u32 render_height;
-    uv3 voxel_grid_resolution;
+    uv2 render_dimensions;
     uv3 cluster_grid_resolution;
+    uv3 voxel_grid_resolution;
 
     VkPipeline DEBUG_cluster_visualizer_pipeline;
     b32        draw_debug_cluster_grid;
@@ -519,10 +533,9 @@ internal void recreate_swapchain(u32 window_width, u32 window_height)
     }
 }
 
-internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
+internal void recreate_main_framebuffer(uv2 render_dimensions)
 {
-    renderer.render_width = render_width;
-    renderer.render_height = render_height;
+    renderer.render_dimensions = render_dimensions;
 
     VkFormat main_depth_format = VK_FORMAT_D32_SFLOAT;
     VkFormat main_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -532,7 +545,7 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     VkImageCreateInfo attachment_image_create_info = {};
     attachment_image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     attachment_image_create_info.imageType = VK_IMAGE_TYPE_2D;
-    attachment_image_create_info.extent = {render_width, render_height, 1};
+    attachment_image_create_info.extent = {renderer.render_dimensions.x, renderer.render_dimensions.y, 1};
     attachment_image_create_info.mipLevels = 1;
     attachment_image_create_info.arrayLayers = 1;
     attachment_image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -626,12 +639,60 @@ internal void recreate_main_framebuffer(u32 render_width, u32 render_height)
     VkFramebufferCreateInfo framebuffer_create_info = {};
     framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebuffer_create_info.renderPass = renderer.main_render_pass;
-    framebuffer_create_info.width = render_width;
-    framebuffer_create_info.height = render_height;
+    framebuffer_create_info.width = renderer.render_dimensions.x;
+    framebuffer_create_info.height = renderer.render_dimensions.y;
     framebuffer_create_info.layers = 1;
     framebuffer_create_info.attachmentCount = array_count(attachments);
     framebuffer_create_info.pAttachments = attachments;
     VK_CALL(vkCreateFramebuffer(vulkan_context.device, &framebuffer_create_info, NULL, &renderer.main_framebuffer));
+}
+
+internal void recreate_cluster_grid(uv3 cluster_grid_resolution)
+{
+    renderer.draw_debug_cluster_grid = false;
+    renderer.cluster_grid_resolution = cluster_grid_resolution;
+
+    u32 cluster_count = renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z;
+    u64 cluster_aabb_size = cluster_count * sizeof(v4) * 2;
+    u64 cluster_light_index_list_size = cluster_count * MAX_LIGHTS_PER_CLUSTER * sizeof(u32) + sizeof(u32);
+    u64 cluster_light_info_size = cluster_count * sizeof(u32) * 2;
+
+    u64 cluster_light_index_list_offset = (cluster_aabb_size + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 cluster_light_info_offset = ((cluster_light_index_list_offset + cluster_light_index_list_size) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 cluster_storage_buffer_size = cluster_light_info_offset + cluster_light_info_size;
+
+    // TODO: Free current cluster grid related resources before recreating new ones!
+    // TODO: Use dedicated allocation extension?
+    VkBufferCreateInfo buffer_create_info = {};
+    buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_create_info.size = cluster_storage_buffer_size;
+    buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.cluster_storage_buffer, &renderer.cluster_storage_memory_block);
+
+    VkDescriptorBufferInfo cluster_aabbs_buffer_info = {renderer.cluster_storage_buffer, 0, cluster_aabb_size};
+    VkWriteDescriptorSet cluster_aabbs_storage_write = {};
+    cluster_aabbs_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cluster_aabbs_storage_write.dstSet = renderer.global_descriptor_set;
+    cluster_aabbs_storage_write.dstBinding = 9;
+    cluster_aabbs_storage_write.descriptorCount = 1;
+    cluster_aabbs_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    cluster_aabbs_storage_write.pBufferInfo = &cluster_aabbs_buffer_info;
+
+    VkDescriptorBufferInfo cluster_light_index_list_buffer_info = {renderer.cluster_storage_buffer, cluster_light_index_list_offset, cluster_light_index_list_size};
+    VkWriteDescriptorSet cluster_light_index_list_storage_write = cluster_aabbs_storage_write;
+    cluster_light_index_list_storage_write.dstBinding = 10;
+    cluster_light_index_list_storage_write.pBufferInfo = &cluster_light_index_list_buffer_info;
+
+    VkDescriptorBufferInfo cluster_light_info_buffer_info = {renderer.cluster_storage_buffer, cluster_light_info_offset, cluster_light_info_size};
+    VkWriteDescriptorSet cluster_light_info_storage_write = cluster_aabbs_storage_write;
+    cluster_light_info_storage_write.dstBinding = 11;
+    cluster_light_info_storage_write.pBufferInfo = &cluster_light_info_buffer_info;
+
+    VkWriteDescriptorSet descriptor_writes[] = {cluster_aabbs_storage_write, cluster_light_index_list_storage_write, cluster_light_info_storage_write};
+    vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
+
+    renderer.cluster_grid_needs_update = true;
 }
 
 internal void recreate_voxel_grid(u32 voxel_grid_resolution)
@@ -914,7 +975,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
         {7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT},
         {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
 
-        {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
+        {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
+        {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
+        {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
     };
 
     VkDescriptorBindingFlagsEXT global_binding_flags[array_count(global_layout_bindings)] = {};
@@ -934,7 +997,8 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     VkDescriptorSetLayoutBinding per_frame_layout_bindings[] =
     {
-        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
     };
 
     VkDescriptorSetLayoutCreateInfo per_frame_layout_create_info = {};
@@ -947,7 +1011,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     {
         {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures + 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES}
@@ -978,14 +1042,12 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     renderer.global_descriptor_set = descriptor_sets[MAX_FRAME_RESOURCES];
     for (u32 i = 0; i < MAX_FRAME_RESOURCES; ++i)
     {
-        renderer.frame_resources[i].uniforms_descriptor_set = descriptor_sets[i];
+        renderer.frame_resources[i].descriptor_set = descriptor_sets[i];
     }
 
     // TODO: Pass in as a renderer setting?
-    renderer.cluster_grid_resolution = {16, 9, 24};
-    renderer.draw_debug_cluster_grid = true;
-
-    recreate_main_framebuffer(1920, 1080);
+    recreate_main_framebuffer({1920, 1080});
+    recreate_cluster_grid({16, 9, 24});
     recreate_voxel_grid(256);
 
     VkDescriptorSetLayout layouts[] = {renderer.per_frame_descriptor_set_layout, renderer.global_descriptor_set_layout};
@@ -997,6 +1059,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // NOTE: Ignoring pipeline cache for now
     VK_CALL(vulkan_create_clusterizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.clusterizer_pipeline));
+    VK_CALL(vulkan_create_cluster_light_culling_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.cluster_light_culling_pipeline));
     VK_CALL(vulkan_create_main_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 0, &renderer.main_pipeline));
     VK_CALL(vulkan_create_final_pass_pipeline(vulkan_context.device, renderer.global_pipeline_layout, vulkan_context.swapchain_render_pass, 0, &renderer.final_pass_pipeline));
     VK_CALL(vulkan_create_voxelizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.voxelization_render_pass, 0, &renderer.voxelizer_pipeline));
@@ -1013,10 +1076,11 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     renderer.transfer_queue = {renderer.transfer_memory_block.base, renderer.transfer_memory_block.size};
 
-    u64 aligned_uniforms_offset = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
-    u64 aligned_frame_data_size = ((aligned_uniforms_offset + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
+    u64 aligned_frame_uniforms_offset = ((DRAW_CALLS_MEMORY_SIZE + DRAW_INSTANCE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
+    u64 aligned_light_storage_offset = ((aligned_frame_uniforms_offset + FRAME_UNIFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 aligned_frame_data_size = ((aligned_light_storage_offset + LIGHT_STORAGE_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minUniformBufferOffsetAlignment;
     buffer_create_info.size = aligned_frame_data_size * MAX_FRAME_RESOURCES;
-    buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buffer_create_info.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &renderer.frame_resources_buffer, &renderer.frame_resources_memory_block);
 
     renderer.mesh_buffer_used = 0;
@@ -1026,8 +1090,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     renderer.storage_materials_offset = 0;
     renderer.storage_xforms_offset = (MATERIALS_MEMORY_SIZE + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
-    renderer.storage_cluster_aabbs_offset = (renderer.storage_xforms_offset + XFORMS_MEMORY_SIZE + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
-    u64 aligned_storage_size = ((renderer.storage_cluster_aabbs_offset + MAX_CLUSTERS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 aligned_storage_size = ((renderer.storage_xforms_offset + XFORMS_MEMORY_SIZE) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
     buffer_create_info.size = aligned_storage_size;
     buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.storage_buffer, &renderer.storage_memory_block);
@@ -1046,12 +1109,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     xform_storage_write.dstBinding = 3;
     xform_storage_write.pBufferInfo = &xform_buffer_info;
 
-    VkDescriptorBufferInfo cluster_aabbs_buffer_info = {renderer.storage_buffer, renderer.storage_cluster_aabbs_offset, MAX_CLUSTERS_MEMORY_SIZE};
-    VkWriteDescriptorSet cluster_aabbs_storage_write = material_storage_write;
-    cluster_aabbs_storage_write.dstBinding = 9;
-    cluster_aabbs_storage_write.pBufferInfo = &cluster_aabbs_buffer_info;
-
-    VkWriteDescriptorSet storage_writes[] = {material_storage_write, xform_storage_write, cluster_aabbs_storage_write};
+    VkWriteDescriptorSet storage_writes[] = {material_storage_write, xform_storage_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(storage_writes), storage_writes, 0, NULL);
 
     // NOTE: Creating a dummy image to get memory type bits in order to allocate texture memory.
@@ -1103,27 +1161,37 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
         renderer.frame_resources[i].should_record_command_buffer = true;
 
-        // NOTE: Layout of frame_resources_buffer is [DRAW_INDIRECT_COUNT | DRAW_INDIRECT_COMMANDS | DRAW_INSTANCE_DATA | FRAME_UNIFORM_DATA] * MAX_FRAME_RESOURCES
+        // NOTE: Layout of frame_resources_buffer is [DRAW_INDIRECT_COUNT | DRAW_INDIRECT_COMMANDS | DRAW_INSTANCE_DATA | FRAME_UNIFORM_DATA | LIGHT_DATA] * MAX_FRAME_RESOURCES
         renderer.frame_resources[i].data_memory_size = aligned_frame_data_size;
         renderer.frame_resources[i].draw_call_count_offset = i * renderer.frame_resources[i].data_memory_size;
         renderer.frame_resources[i].draw_command_offset = renderer.frame_resources[i].draw_call_count_offset + sizeof(u32);
         renderer.frame_resources[i].draw_instance_offset = renderer.frame_resources[i].draw_command_offset + DRAW_CALLS_MEMORY_SIZE - sizeof(u32);
-        renderer.frame_resources[i].uniforms_offset = renderer.frame_resources[i].draw_instance_offset + (aligned_uniforms_offset - DRAW_CALLS_MEMORY_SIZE);
+        renderer.frame_resources[i].uniforms_offset = renderer.frame_resources[i].draw_instance_offset + (aligned_frame_uniforms_offset - DRAW_CALLS_MEMORY_SIZE);
+        renderer.frame_resources[i].light_storage_offset = renderer.frame_resources[i].uniforms_offset + (aligned_light_storage_offset - aligned_frame_uniforms_offset);
 
         renderer.frame_resources[i].draw_call_count = (u32*)(renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_call_count_offset);
         renderer.frame_resources[i].draw_command_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_command_offset, DRAW_CALLS_MEMORY_SIZE - sizeof(u32)};
         renderer.frame_resources[i].draw_instance_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].draw_instance_offset, DRAW_INSTANCE_MEMORY_SIZE};
         renderer.frame_resources[i].uniforms = (Frame_Uniforms*)(renderer.frame_resources_memory_block.base + renderer.frame_resources[i].uniforms_offset);
+        renderer.frame_resources[i].light_arena = {renderer.frame_resources_memory_block.base + renderer.frame_resources[i].light_storage_offset, LIGHT_STORAGE_MEMORY_SIZE};
 
-        VkDescriptorBufferInfo buffer_info = {renderer.frame_resources_buffer, renderer.frame_resources[i].uniforms_offset, sizeof(Frame_Uniforms)};
+        VkDescriptorBufferInfo uniforms_buffer_info = {renderer.frame_resources_buffer, renderer.frame_resources[i].uniforms_offset, sizeof(Frame_Uniforms)};
         VkWriteDescriptorSet uniform_write = {};
         uniform_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        uniform_write.dstSet = renderer.frame_resources[i].uniforms_descriptor_set;
+        uniform_write.dstSet = renderer.frame_resources[i].descriptor_set;
         uniform_write.dstBinding = 0;
         uniform_write.descriptorCount = 1;
         uniform_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uniform_write.pBufferInfo = &buffer_info;
-        vkUpdateDescriptorSets(vulkan_context.device, 1, &uniform_write, 0, NULL);
+        uniform_write.pBufferInfo = &uniforms_buffer_info;
+
+        VkDescriptorBufferInfo light_storage_info = {renderer.frame_resources_buffer, renderer.frame_resources[i].light_storage_offset, LIGHT_STORAGE_MEMORY_SIZE};
+        VkWriteDescriptorSet storage_write = uniform_write;
+        storage_write.dstBinding = 1;
+        storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        storage_write.pBufferInfo = &light_storage_info;
+
+        VkWriteDescriptorSet descriptor_writes[] = {uniform_write, storage_write};
+        vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
     }
 }
 
@@ -1592,21 +1660,27 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     renderer.current_render_frame->draw_instance_count = 0;
     memory_arena_reset(&renderer.current_render_frame->draw_instance_arena);
 
+    renderer.current_render_frame->uniforms->light_count = 0;
+    memory_arena_reset(&renderer.current_render_frame->light_arena);
+
+    renderer.current_render_frame->uniforms->view = frame_params->camera.view;
     renderer.current_render_frame->uniforms->projection = frame_params->camera.projection;
-    renderer.current_render_frame->uniforms->view_projection = frame_params->camera.projection * frame_params->camera.view;
+    renderer.current_render_frame->uniforms->view_projection = frame_params->camera.projection * renderer.current_render_frame->uniforms->view;
     renderer.current_render_frame->uniforms->inverse_projection = inverse(renderer.current_render_frame->uniforms->projection);
     renderer.current_render_frame->uniforms->inverse_view_projection = inverse(renderer.current_render_frame->uniforms->view_projection);
 
-    renderer.current_render_frame->uniforms->inverse_render_dimensions = {1.0f / (f32)renderer.render_width, 1.0f / (f32)renderer.render_height};
+    renderer.current_render_frame->uniforms->DEBUG_view = frame_params->DEBUG_camera.view;
+
+    renderer.current_render_frame->uniforms->inverse_render_dimensions = {1.0f / (f32)renderer.render_dimensions.x, 1.0f / (f32)renderer.render_dimensions.y};
 
     assert(renderer.voxel_grid_resolution.x == renderer.voxel_grid_resolution.y && renderer.voxel_grid_resolution.x == renderer.voxel_grid_resolution.z);
     renderer.current_render_frame->uniforms->voxel_grid_origin_resolution = {frame_params->camera.position.x, frame_params->camera.position.y, frame_params->camera.position.z, (f32)renderer.voxel_grid_resolution.x};
     renderer.current_render_frame->uniforms->voxel_size = 0.1;
     renderer.current_render_frame->uniforms->voxel_ray_step_size = 0.5;
 
-    renderer.current_render_frame->uniforms->cluster_grid_resolution_size = {renderer.cluster_grid_resolution.x, renderer.cluster_grid_resolution.y, renderer.cluster_grid_resolution.z, (u32)(round_up(renderer.render_width / renderer.cluster_grid_resolution.x))};
+    renderer.current_render_frame->uniforms->cluster_grid_resolution_size = {renderer.cluster_grid_resolution.x, renderer.cluster_grid_resolution.y, renderer.cluster_grid_resolution.z, (u32)(round_up(renderer.render_dimensions.x / renderer.cluster_grid_resolution.x))};
     renderer.current_render_frame->uniforms->camera_position = {frame_params->camera.position.x, frame_params->camera.position.y, frame_params->camera.position.z};
-    renderer.current_render_frame->uniforms->camera_near = 0.3;
+    renderer.current_render_frame->uniforms->camera_near = 0.1;
     renderer.current_render_frame->uniforms->camera_far = 100;
 }
 
@@ -1642,6 +1716,17 @@ void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_co
     renderer.current_render_frame->draw_instance_count += instance_count;
 }
 
+void renderer_draw_light(Light light)
+{
+    assert(renderer.current_render_frame);
+    assert(renderer.current_render_frame->uniforms->light_count < MAX_LIGHTS);
+
+    Light* light_data = (Light*)memory_arena_reserve(&renderer.current_render_frame->light_arena, sizeof(Light));
+    copy_memory(light_data, &light, sizeof(Light));
+
+    renderer.current_render_frame->uniforms->light_count++;
+}
+
 void renderer_end_frame()
 {
     assert(renderer.current_render_frame);
@@ -1668,7 +1753,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         clear_values[0].color = {0.0f, 0.0f, 0.0f, 0.0f};
         clear_values[1].depthStencil = {0.0f, 0};
 
-        VkDescriptorSet descriptor_sets[] = {frame_resources->uniforms_descriptor_set, renderer.global_descriptor_set};
+        VkDescriptorSet descriptor_sets[] = {frame_resources->descriptor_set, renderer.global_descriptor_set};
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.global_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.global_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
 
@@ -1686,6 +1771,12 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         {
             vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.clusterizer_pipeline);
             vkCmdDispatch(frame_resources->graphics_compute_command_buffer, renderer.cluster_grid_resolution.x, renderer.cluster_grid_resolution.y, renderer.cluster_grid_resolution.z);
+        }
+
+        // NOTE: Light culling pass
+        {
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.cluster_light_culling_pipeline);
+            vkCmdDispatch(frame_resources->graphics_compute_command_buffer, 1, 1, renderer.cluster_grid_resolution.z / 4);
         }
 
     #if 0
@@ -1796,7 +1887,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             render_pass_begin_info.renderPass = renderer.main_render_pass;
             render_pass_begin_info.framebuffer = renderer.main_framebuffer;
             render_pass_begin_info.renderArea.offset = {0, 0};
-            render_pass_begin_info.renderArea.extent = {renderer.render_width, renderer.render_height};
+            render_pass_begin_info.renderArea.extent = {renderer.render_dimensions.x, renderer.render_dimensions.y};
             render_pass_begin_info.clearValueCount = array_count(clear_values);
             render_pass_begin_info.pClearValues = clear_values;
             vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -1807,8 +1898,8 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             VkRect2D scissor = render_pass_begin_info.renderArea;
             vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
-            // vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.main_pipeline);
-            // vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.main_pipeline);
+            vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
 
             if (renderer.draw_debug_cluster_grid)
             {
@@ -1831,7 +1922,7 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             render_pass_begin_info.framebuffer = vulkan_context.swapchain_framebuffers[frame_params->frame_number % MAX_FRAME_RESOURCES];
 
             // NOTE: Setting the render pass's render area like this means we can't control the aspect ratio 'bars' with the clear color (they will always be black)
-            render_pass_begin_info.renderArea = aspect_ratio_corrected_render_area(renderer.render_width, renderer.render_height, vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
+            render_pass_begin_info.renderArea = aspect_ratio_corrected_render_area(renderer.render_dimensions.x, renderer.render_dimensions.y, vulkan_context.swapchain_extent.width, vulkan_context.swapchain_extent.height);
 
             vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.final_pass_pipeline);

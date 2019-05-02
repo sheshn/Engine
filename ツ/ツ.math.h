@@ -311,15 +311,7 @@ internal m4x4 operator*(m4x4 left, m4x4 right)
 
 internal v4 operator*(m4x4 left, v4 right)
 {
-    v4 result = {};
-    for (size_t i = 0; i < 4; ++i)
-    {
-        for (size_t j = 0; j < 4; ++j)
-        {
-            result.data[j] += left.columns[i].data[j] * right.data[i];
-        }
-    }
-    return result;
+    return left.columns[0] * right.data[0] + left.columns[1] * right.data[1] + left.columns[2] * right.data[2] + left.columns[3] * right.data[3];
 }
 
 internal m4x4& operator*=(m4x4& left, m4x4 right)

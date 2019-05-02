@@ -225,6 +225,8 @@ void process_window_messages(HWND window_handle, Frame_Parameters* frame_params)
 {
     frame_params->input.mouse_delta = {};
 
+    frame_params->input.button_t.is_pressed = false;
+
     MSG message;
     while (PeekMessage(&message, window_handle, 0, 0, PM_REMOVE))
     {
@@ -256,6 +258,15 @@ void process_window_messages(HWND window_handle, Frame_Parameters* frame_params)
             case VK_RIGHT:
             case 'D':
                 frame_params->input.button_right = {key_is_down, key_was_down && !key_is_down};
+                break;
+            case 'T':
+                frame_params->input.button_t = {key_is_down, key_was_down && !key_is_down};
+                break;
+            case VK_SPACE:
+                frame_params->input.button_space = {key_is_down, key_was_down && !key_is_down};
+                break;
+            case VK_SHIFT:
+                frame_params->input.button_shift = {key_is_down, key_was_down && !key_is_down};
                 break;
             };
         } break;
@@ -399,6 +410,7 @@ void __stdcall WinMainCRTStartup()
     current_frame->frame_number = 0;
 
     current_frame->camera.rotation = {0, 0, 0, 1};
+    current_frame->DEBUG_camera.view = identity();
 
     LARGE_INTEGER performance_frequency;
     QueryPerformanceFrequency(&performance_frequency);
@@ -438,6 +450,8 @@ void __stdcall WinMainCRTStartup()
 
         current_frame->camera = current_frame->previous->camera;
         current_frame->input = current_frame->previous->input;
+
+        current_frame->DEBUG_camera = current_frame->previous->DEBUG_camera;
     }
 
     ExitProcess(0);

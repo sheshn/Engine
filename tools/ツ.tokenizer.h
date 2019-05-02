@@ -224,7 +224,7 @@ internal b32 token_equals(Token token, char* token_text)
             return false;
         }
     }
-    return true;
+    return token_text[token.length] == 0;
 }
 
 internal b32 token_starts_with(Token token, char* prefix, u64 prefix_length)

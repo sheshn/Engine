@@ -23,6 +23,10 @@ struct Input
     Input_Button_State button_left;
     Input_Button_State button_right;
 
+    Input_Button_State button_t;
+    Input_Button_State button_space;
+    Input_Button_State button_shift;
+
     Input_Button_State mouse_button_left;
     Input_Button_State mouse_button_right;
 
@@ -52,6 +56,7 @@ struct Frame_Parameters
     Input input;
 
     Camera camera;
+    Camera DEBUG_camera;
 };
 
 void game_init(Game_State* game_state);

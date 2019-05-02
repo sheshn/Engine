@@ -56,6 +56,41 @@ struct Transform
     m4x4  model;
 };
 
+enum Light_Type
+{
+    LIGHT_TYPE_DIRECTIONAL,
+    LIGHT_TYPE_POINT,
+    LIGHT_TYPE_SPOT
+};
+
+struct Light
+{
+    Light_Type type;
+
+    u32 reserved[3];
+
+    // TODO: Do we actually want to do it like this?
+    union
+    {
+        v4 position_or_direction_radius;
+        struct
+        {
+            union { v3 position; v3 direction; };
+            f32 radius;
+        };
+    };
+
+    union
+    {
+        v4 color_intensity;
+        struct
+        {
+            v3  color;
+            f32 intensity;
+        };
+    };
+};
+
 #define MAX_TRANSFER_OPERATIONS 256
 
 enum Renderer_Transfer_Operation_Type
@@ -119,6 +154,7 @@ void renderer_queue_transfer(Renderer_Transfer_Operation* operation, Job_Counter
 void renderer_begin_frame(Frame_Parameters* frame_params);
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Material material, Renderer_Transform xform);
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, u32 instance_count, Renderer_Material* materials, Renderer_Transform* xforms);
+void renderer_draw_light(Light light);
 void renderer_end_frame();
 
 void renderer_submit_frame(Frame_Parameters* frame_params);

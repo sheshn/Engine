@@ -29,12 +29,35 @@ struct Cluster_AABB
     v4 max;
 };
 
+struct Cluster_Light_Info
+{
+    u32 offset;
+    u32 count;
+};
+
+#define MAX_LIGHTS_PER_CLUSTER 64
+#define LIGHT_TYPE_DIRECTIONAL 0
+#define LIGHT_TYPE_POINT       1
+#define LIGHT_TYPE_SPOT        2
+
+struct Light
+{
+    u32 type;
+    u32 reserved[3];
+
+    v4 position_or_direction_radius;
+    v4 color_intensity;
+};
+
 struct Frame_Uniforms
 {
+    m4x4 view;
     m4x4 projection;
     m4x4 view_projection;
     m4x4 inverse_projection;
     m4x4 inverse_view_projection;
+
+    m4x4 DEBUG_view;
 
     v4  camera_position;
     v4  voxel_grid_origin_resolution;
@@ -47,6 +70,8 @@ struct Frame_Uniforms
 
     f32 camera_near;
     f32 camera_far;
+
+    u32 light_count;
 };
 
 u32 index_3d_to_index_1d(uv3 index_3d, uv3 dimension)
@@ -69,6 +94,11 @@ v4 screen_to_view_space(v4 screen_space, v2 inverse_screen_dimensions, m4x4 inve
     return view_space / view_space.w;
 }
 
+f32 linear_depth(f32 depth, m4x4 projection)
+{
+    return projection[3][2] / (depth - projection[2][2]);
+}
+
 v3 depth_to_position(f32 depth, v2 uv, m4x4 projection, m4x4 inverse_view_projection)
 {
     f32 linear_depth = projection[3][2] / (depth - projection[2][2]);
@@ -80,6 +110,7 @@ v3 depth_to_position(f32 depth, v2 uv, m4x4 projection, m4x4 inverse_view_projec
 layout Global_Layout
 {
     layout(set = 0, binding = 0, std140) uniform frame_uniform_buffer { Frame_Uniforms frame_uniforms; };
+    layout(set = 0, binding = 1, std430) buffer light_buffer { Light lights[]; };
 
     layout(set = 1, binding = 0) uniform sampler texture_2d_sampler;
     layout(set = 1, binding = 1) uniform texture2D textures_2d[];
@@ -93,12 +124,9 @@ layout Global_Layout
     layout(set = 1, binding = 7, rgba8) uniform image3D voxel_image;
     layout(set = 1, binding = 8) uniform sampler3D voxel_texture;
 
-    layout(set = 1, binding = 9, std430) buffer cluster_buffer { Cluster_AABB cluster_aabbs[]; };
-};
-
-layout Clusterizer_Layout
-{
-    layout (local_size_x = 1, local_size_y = 1) in;
+    layout(set = 1, binding = 9, std430) buffer cluster_aabb_buffer { Cluster_AABB cluster_aabbs[]; };
+    layout(set = 1, binding = 10, std430) buffer cluster_light_index_buffer { u32 cluster_light_index_list_counter; u32 cluster_light_index_list[]; };
+    layout(set = 1, binding = 11, std430) buffer cluster_light_info_buffer { Cluster_Light_Info cluster_light_info[]; };
 };
 
 v3 line_to_z_plane_intersection(v3 a, v3 b, f32 z)
@@ -110,7 +138,7 @@ v3 line_to_z_plane_intersection(v3 a, v3 b, f32 z)
     return a + t * ab;
 }
 
-compute(Global_Layout, Clusterizer_Layout) void clusterizer_shader()
+compute(Global_Layout) void clusterizer_shader()
 {
     v4 screen_space_aabb_max = v4(v2(gl_GlobalInvocationID.x + 1, gl_GlobalInvocationID.y + 1) * frame_uniforms.cluster_grid_resolution_size.w, 1, 1);
     v4 screen_space_aabb_min = v4(gl_GlobalInvocationID.xy * frame_uniforms.cluster_grid_resolution_size.w, 1, 1);
@@ -121,17 +149,83 @@ compute(Global_Layout, Clusterizer_Layout) void clusterizer_shader()
     f32 cluster_near = frame_uniforms.camera_near * pow(frame_uniforms.camera_far / frame_uniforms.camera_near, gl_GlobalInvocationID.z / f32(frame_uniforms.cluster_grid_resolution_size.z));
     f32 cluster_far = frame_uniforms.camera_near * pow(frame_uniforms.camera_far / frame_uniforms.camera_near, (gl_GlobalInvocationID.z + 1) / f32(frame_uniforms.cluster_grid_resolution_size.z));
 
-    v3 min_near = line_to_z_plane_intersection(v3(0), view_space_aabb_min, cluster_near);
-    v3 min_far = line_to_z_plane_intersection(v3(0), view_space_aabb_min, cluster_far);
     v3 max_near = line_to_z_plane_intersection(v3(0), view_space_aabb_max, cluster_near);
     v3 max_far = line_to_z_plane_intersection(v3(0), view_space_aabb_max, cluster_far);
+    v3 min_near = line_to_z_plane_intersection(v3(0), view_space_aabb_min, cluster_near);
+    v3 min_far = line_to_z_plane_intersection(v3(0), view_space_aabb_min, cluster_far);
 
-    vec3 aabb_min = min(min(min_near, min_far), min(max_near, max_far));
     vec3 aabb_max = max(max(min_near, min_far), max(max_near, max_far));
+    vec3 aabb_min = min(min(min_near, min_far), min(max_near, max_far));
 
     u32 cluster_index = index_3d_to_index_1d(gl_GlobalInvocationID, frame_uniforms.cluster_grid_resolution_size.xyz);
-    cluster_aabbs[cluster_index].min = v4(aabb_min, 0);
     cluster_aabbs[cluster_index].max = v4(aabb_max, 0);
+    cluster_aabbs[cluster_index].min = v4(aabb_min, 0);
+}
+
+layout Cluster_Light_Culling_Compute_Layout
+{
+    layout(local_size_x = 16, local_size_y = 9, local_size_z = 4) in;
+
+    shared Light shared_lights[16 * 9 * 4];
+};
+
+bool sphere_intersects_aabb(v3 sphere_center, f32 sphere_radius, v3 aabb_min, v3 aabb_max)
+{
+    f32 squared_distance = 0;
+    for (u32 i = 0; i < 3; ++i)
+    {
+        f32 p = sphere_center[i];
+        if (p < aabb_min[i])
+        {
+            squared_distance += (aabb_min[i] - p) * (aabb_min[i] - p);
+        }
+        if (p > aabb_max[i])
+        {
+            squared_distance += (p - aabb_max[i]) * (p - aabb_max[i]);
+        }
+    }
+    return squared_distance <= (sphere_radius * sphere_radius);
+}
+
+compute(Global_Layout, Cluster_Light_Culling_Compute_Layout) void cluster_light_culling_shader()
+{
+    cluster_light_index_list_counter = 0;
+
+    u32 batch_cluster_count = gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z;
+    u32 total_batches = (frame_uniforms.light_count + batch_cluster_count - 1) / batch_cluster_count;
+    u32 cluster_index = gl_LocalInvocationIndex + gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z * gl_WorkGroupID.z;
+    Cluster_AABB cluster_aabb = cluster_aabbs[cluster_index];
+
+    u32 visible_light_count = 0;
+    u32 visible_light_index_list[MAX_LIGHTS_PER_CLUSTER];
+
+    for (u32 i = 0; i < total_batches; ++i)
+    {
+        u32 light_index = min(gl_LocalInvocationIndex + i * batch_cluster_count, frame_uniforms.light_count);
+
+        shared_lights[gl_LocalInvocationIndex] = lights[light_index];
+        barrier();
+
+        for (u32 light = 0; light < batch_cluster_count; ++light)
+        {
+            v3 view_space_light_position = (frame_uniforms.view * v4(shared_lights[light].position_or_direction_radius.xyz, 1)).xyz;
+            if (light != frame_uniforms.light_count && shared_lights[light].type == LIGHT_TYPE_POINT && sphere_intersects_aabb(view_space_light_position, shared_lights[light].position_or_direction_radius.w, cluster_aabb.min.xyz, cluster_aabb.max.xyz))
+            {
+                visible_light_index_list[visible_light_count++] = i * batch_cluster_count + light;
+            }
+        }
+    }
+
+    barrier();
+
+    u32 light_index_list_offset = atomicAdd(cluster_light_index_list_counter, visible_light_count);
+    for (u32 i = 0; i < visible_light_count; ++i)
+    {
+        cluster_light_index_list[light_index_list_offset + i] = visible_light_index_list[i];
+    }
+
+    cluster_light_info[cluster_index].offset = light_index_list_offset;
+    cluster_light_info[cluster_index].count = visible_light_count;
 }
 
 struct Default_Vertex_In
@@ -175,6 +269,26 @@ vertex(Global_Layout) Default_Fragment_In default_vertex_shader(Default_Vertex_I
 
 fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fragment_In stage_in)
 {
+    // TODO: Precalculate these!
+    f32 slice_scale = f32(frame_uniforms.cluster_grid_resolution_size.z) / log2(frame_uniforms.camera_far / frame_uniforms.camera_near);
+    f32 slice_bias = -f32(frame_uniforms.cluster_grid_resolution_size.z) * log2(frame_uniforms.camera_near) / log2(frame_uniforms.camera_far / frame_uniforms.camera_near);
+
+    u32 cluster_z = u32(max(log2(linear_depth(gl_FragCoord.z, frame_uniforms.projection)) * slice_scale + slice_bias, 0));
+    uv3 cluster_coordinate = uv3(uv2(gl_FragCoord.xy / frame_uniforms.cluster_grid_resolution_size.w), cluster_z);
+    u32 cluster_index = index_3d_to_index_1d(cluster_coordinate, frame_uniforms.cluster_grid_resolution_size.xyz);
+
+#if 0
+    v3 DEBUG_cluster_colors[24] = v3[]
+    (
+        v3(143,0,255),   v3(227,38,54),   v3(77,93,83),    v3(102,221,170), v3(179,27,27),  v3(120,134,107),
+        v3(193,154,107), v3(171,205,239), v3(240,220,130), v3(229,170,112), v3(105,53,156), v3(35,41,122),
+        v3(210,105,30),  v3(216,191,216), v3(244,194,194), v3(209,226,49),  v3(255,127,80), v3(228,208,10),
+        v3(250,214,165), v3(102,221,170), v3(161,202,241), v3(254,78,218),  v3(138,43,226), v3(112,41,99)
+    );
+
+    v3 albedo = DEBUG_cluster_colors[cluster_z] / 255.0;
+#endif
+
     Material material = materials[stage_in.material_id];
     v4 base_color = texture(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), stage_in.uv0) * material.base_color_factor;
     v4 occlusion_roughness_metallic = texture(sampler2D(textures_2d[nonuniformEXT(material.occlusion_roughness_metallic_texture_id)], texture_2d_sampler), stage_in.uv0);
@@ -195,6 +309,14 @@ fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fra
     tangent_space_normal.xy = normal * 2 - 1;
     tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
     v3 world_space_normal = normalize(tangent_frame_matrix * tangent_space_normal);
+
+#if 0
+    u32 light_count = cluster_light_info[cluster_index].count;
+    if (light_count > 0)
+    {
+        albedo = v3(1, 0, 0);
+    }
+#endif
 
     Default_Fragment_Out stage_out = {v4(albedo.rgb, 1)};
     return stage_out;
@@ -422,7 +544,7 @@ geometry(Global_Layout) DEBUG_Voxel_Visualizer_Geometry_In[14] DEBUG_cluster_vis
     f32 slice_bias = -f32(frame_uniforms.cluster_grid_resolution_size.z) * log2(frame_uniforms.camera_near) / log2(frame_uniforms.camera_far / frame_uniforms.camera_near);
     u32 cluster_z = u32(max(log2(cluster_position.z) * slice_scale + slice_bias, 0));
 
-    v3 colors[24] = v3[]
+    v3 DEBUG_cluster_colors[24] = v3[]
     (
         v3(143,0,255),   v3(227,38,54),   v3(77,93,83),    v3(102,221,170), v3(179,27,27),  v3(120,134,107),
         v3(193,154,107), v3(171,205,239), v3(240,220,130), v3(229,170,112), v3(105,53,156), v3(35,41,122),
@@ -435,8 +557,8 @@ geometry(Global_Layout) DEBUG_Voxel_Visualizer_Geometry_In[14] DEBUG_cluster_vis
     {
         // NOTE: Cube vertex position from index
         stage_out[i].vertex_position.xyz = (v3((0x287A & (1 << i)) != 0, (0x02AF & (1 << i)) != 0, (0x31E3 & (1 << i)) != 0));
-        stage_out[i].vertex_position = frame_uniforms.view_projection * v4(stage_out[i].vertex_position.xyz * cluster_scale + cluster_position, 1);
-        stage_out[i].color = v4(colors[cluster_z % 24] / 255.0, 1.0);
+        stage_out[i].vertex_position = frame_uniforms.view_projection * frame_uniforms.DEBUG_view * v4(stage_out[i].vertex_position.xyz * cluster_scale + cluster_position, 1);
+        stage_out[i].color = v4(DEBUG_cluster_colors[cluster_z] / 255.0, 1);
     }
     return stage_out;
 }
@@ -480,6 +602,11 @@ fragment(Global_Layout) DEBUG_Voxel_Visualizer_Fragment_Out DEBUG_voxel_visualiz
 pipeline Clusterizer_Pipeline
 {
     shaders = [clusterizer_shader];
+};
+
+pipeline Cluster_Light_Culling_Pipeline
+{
+    shaders = [cluster_light_culling_shader];
 };
 
 pipeline Main_Pipeline

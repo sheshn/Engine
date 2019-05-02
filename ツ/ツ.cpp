@@ -135,15 +135,41 @@ void game_update(Frame_Parameters* frame_params)
     {
         started_down = false;
     }
+
+    if (frame_params->input.button_space.is_down)
+    {
+        frame_params->camera.position += v3{0, 1, 0} * frame_params->camera.rotation * speed * frame_params->delta_time;
+    }
+    if (frame_params->input.button_shift.is_down)
+    {
+        frame_params->camera.position += v3{0, -1, 0} * frame_params->camera.rotation * speed * frame_params->delta_time;
+    }
 #endif
 
     frame_params->camera.view = quat_to_m4x4(conjugate(frame_params->camera.rotation)) * translate(identity(), -1 * frame_params->camera.position);
-    frame_params->camera.projection = perspective_infinite(radians(90.0f), 16.0 / 9.0f, 0.01f);
+    frame_params->camera.projection = perspective_infinite(radians(90.0f), 16.0 / 9.0f, 0.1f);
+
+    if (frame_params->input.button_t.is_pressed)
+    {
+        frame_params->DEBUG_camera.view = translate(identity(), frame_params->camera.position) * quat_to_m4x4(frame_params->camera.rotation);
+    }
 }
 
 void game_render(Frame_Parameters* frame_params)
 {
     renderer_begin_frame(frame_params);
+
+    Light light1 = {LIGHT_TYPE_DIRECTIONAL};
+    light1.direction = {1, 1, 1};
+    light1.color_intensity = {1, 1, 1, 5};
+
+    Light light2 = {LIGHT_TYPE_POINT};
+    light2.radius = 1;
+    light2.position = {0, 1, 0};
+    light2.color_intensity = {0, 1, 1, 6};
+
+    renderer_draw_light(light1);
+    renderer_draw_light(light2);
     // draw_mesh(8, renderer_create_transform_reference(0));
     draw_mesh(128, renderer_create_transform_reference(1));
     // draw_mesh(234, renderer_create_transform_reference(2));
