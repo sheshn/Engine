@@ -244,6 +244,7 @@ struct Default_Fragment_In
 
     u32 material_id: [flat];
 
+    v3 position;
     v3 normal;
     v3 tangent;
     v3 bitangent;
@@ -260,11 +261,63 @@ vertex(Global_Layout) Default_Fragment_In default_vertex_shader(Default_Vertex_I
     Default_Fragment_In stage_out;
     stage_out.vertex_position = frame_uniforms.view_projection * xforms[stage_in.instance_data.x].model * v4(stage_in.position.xyz, 1.0);
     stage_out.material_id = stage_in.instance_data.y;
+    stage_out.position = (xforms[stage_in.instance_data.x].model * v4(stage_in.position.xyz, 1.0)).xyz;
     stage_out.normal = normalize(m3x3(xforms[stage_in.instance_data.x].model) * stage_in.normal);
     stage_out.tangent = normalize(m3x3(xforms[stage_in.instance_data.x].model) * stage_in.tangent.xyz);
     stage_out.bitangent = cross(stage_out.normal, stage_out.tangent) * stage_in.tangent.w;
     stage_out.uv0 = stage_in.uv0;
     return stage_out;
+}
+
+v3 diffuse(v3 albedo)
+{
+    return albedo / PI;
+}
+
+f32 microfacet_distribution(f32 alpha, f32 n_dot_h)
+{
+    f32 alpha_squared = alpha * alpha;
+    f32 f = (n_dot_h * alpha_squared - n_dot_h) * n_dot_h + 1;
+    return alpha_squared / (PI * f * f);
+}
+
+f32 geometric_occlusion(f32 alpha, f32 n_dot_l, f32 n_dot_v)
+{
+    f32 l = 2 * n_dot_l / (n_dot_l + sqrt(alpha * alpha + (1 - alpha * alpha) * (n_dot_l * n_dot_l)));
+    f32 v = 2 * n_dot_v / (n_dot_v + sqrt(alpha * alpha + (1 - alpha * alpha) * (n_dot_v * n_dot_v)));
+    return l * v;
+}
+
+v3 specular_reflection(v3 reflectance0, v3 reflectance90, f32 v_dot_h)
+{
+    return reflectance0 + (reflectance90 - reflectance0) * pow(clamp(1 - v_dot_h, 0, 1), 5);
+}
+
+v3 brdf(v3 light_direction, v3 surface_position, v3 surface_normal, v3 view_direction, v3 albedo, v3 specular, v3 reflectance90, f32 roughness)
+{
+    v3 l = normalize(light_direction);
+    v3 h = normalize(l + view_direction);
+    f32 n_dot_l = clamp(dot(surface_normal, l), 0.001, 1);
+    f32 n_dot_v = clamp(abs(dot(surface_normal, view_direction)), 0.001, 1);
+    f32 n_dot_h = clamp(dot(surface_normal, h), 0, 1);
+    f32 v_dot_h = clamp(dot(view_direction, h), 0, 1);
+
+    f32 D = microfacet_distribution(roughness, n_dot_h);
+    f32 G = geometric_occlusion(roughness, n_dot_l, n_dot_v);
+    v3 F = specular_reflection(specular, reflectance90, v_dot_h);
+
+    v3 diffuse_contribution = (1 - F) * diffuse(albedo);
+    v3 specular_contribution = F * G * D / (4 * n_dot_l * n_dot_v);
+    return n_dot_l * (diffuse_contribution + specular_contribution);
+}
+
+v3 calculate_point_light(Light light, v3 surface_position, v3 surface_normal, v3 view_direction, v3 albedo, v3 specular, v3 reflectance90, f32 roughness)
+{
+    v3 surface_to_light = light.position_or_direction_radius.xyz - surface_position;
+    f32 distance = length(surface_to_light);
+    f32 attenuation = pow(clamp(1 - pow((distance / light.position_or_direction_radius.w), 4.0), 0.0, 1.0), 2.0)/(1.0  + (distance * distance));
+
+    return light.color_intensity.rgb * light.color_intensity.w * attenuation * brdf(surface_to_light, surface_position, surface_normal, view_direction, albedo, specular, reflectance90, roughness);
 }
 
 fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fragment_In stage_in)
@@ -301,24 +354,29 @@ fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fra
 
     roughness *= roughness;
     v3 specular = mix(f0, base_color.rgb, metallic);
+    v3 reflectance90 = vec3(1) * clamp(max(max(specular.r, specular.g), specular.b) * 25, 0, 1);
 
     m3x3 tangent_frame_matrix = m3x3(normalize(stage_in.tangent), normalize(stage_in.bitangent), normalize(stage_in.normal));
 
+    // TODO: If the model does not have a normal map, it will fetch texture 0 which is a white bitmap. This corresponds to a normal of (1, 1, 1) which is incorrect!
     v2 normal = texture(sampler2D(textures_2d[nonuniformEXT(material.normal_texture_id)], texture_2d_sampler), stage_in.uv0).rg;
     v3 tangent_space_normal;
     tangent_space_normal.xy = normal * 2 - 1;
     tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
     v3 world_space_normal = normalize(tangent_frame_matrix * tangent_space_normal);
 
-#if 0
-    u32 light_count = cluster_light_info[cluster_index].count;
-    if (light_count > 0)
-    {
-        albedo = v3(1, 0, 0);
-    }
-#endif
+    v3 view_direction = normalize(frame_uniforms.camera_position.xyz - stage_in.position);
+    v3 direct_lighting = v3(0);
 
-    Default_Fragment_Out stage_out = {v4(albedo.rgb, 1)};
+    u32 light_count = cluster_light_info[cluster_index].count;
+    u32 light_offset = cluster_light_info[cluster_index].offset;
+    for (u32 i = 0; i < light_count; ++i)
+    {
+        Light light = lights[cluster_light_index_list[light_offset + i]];
+        direct_lighting += calculate_point_light(light, stage_in.position, world_space_normal, view_direction, albedo, specular, reflectance90, roughness);
+    }
+
+    Default_Fragment_Out stage_out = {v4(direct_lighting, 1)};
     return stage_out;
 }
 
