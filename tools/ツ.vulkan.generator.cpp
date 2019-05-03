@@ -1277,6 +1277,7 @@ struct Shader_Pipeline_Input_Assembly_State
 
 struct Shader_Pipeline_Rasterization_State
 {
+    std::string rasterizer_discard_enable;
     std::string cull_mode;
     std::string front_face;
 };
@@ -1327,6 +1328,7 @@ std::string pipeline_input_assembly_state_create_info(Shader_Pipeline_Input_Asse
 std::string pipeline_rasterization_state_create_info(Shader_Pipeline_Rasterization_State state)
 {
     std::string result = "\tVkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};\n";
+    result += "\trasterization_state_create_info.rasterizerDiscardEnable = " + state.rasterizer_discard_enable + ";\n";
     result += "\trasterization_state_create_info.cullMode = " + state.cull_mode + ";\n";
     result += "\trasterization_state_create_info.frontFace = " + state.front_face + ";\n";
     return result;
@@ -1363,7 +1365,7 @@ Shader_Pipeline_Input_Assembly_State create_default_input_assembly_state()
 
 Shader_Pipeline_Rasterization_State create_default_rasterization_state()
 {
-    return {"VK_CULL_MODE_NONE", "VK_FRONT_FACE_COUNTER_CLOCKWISE"};
+    return {"VK_FALSE", "VK_CULL_MODE_NONE", "VK_FRONT_FACE_COUNTER_CLOCKWISE"};
 }
 
 Shader_Pipeline_Blend_Attachment_State create_default_blend_attachment_state()
@@ -1472,6 +1474,11 @@ Shader_Pipeline_Rasterization_State parse_shader_pipeline_rasterization_state(To
             {
                 Token value = get_token(tokenizer);
                 state.front_face = std::string(value.text, value.length);
+            }
+            else if (token_equals(t, "rasterizer_discard_enable") && eat_token(tokenizer, TOKEN_TYPE_EQUAL))
+            {
+                Token value = get_token(tokenizer);
+                state.rasterizer_discard_enable = std::string(value.text, value.length);
             }
         }
     }

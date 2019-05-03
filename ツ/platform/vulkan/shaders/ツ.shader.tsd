@@ -256,6 +256,17 @@ struct Default_Fragment_Out
     v4 color;
 };
 
+struct Depth_Only_Vertex_Out
+{
+    v4 vertex_position: [position];
+};
+
+vertex(Global_Layout) Depth_Only_Vertex_Out depth_only_vertex_shader(Default_Vertex_In stage_in)
+{
+    Depth_Only_Vertex_Out stage_out = {frame_uniforms.view_projection * xforms[stage_in.instance_data.x].model * v4(stage_in.position.xyz, 1.0)};
+    return stage_out;
+}
+
 vertex(Global_Layout) Default_Fragment_In default_vertex_shader(Default_Vertex_In stage_in)
 {
     Default_Fragment_In stage_out;
@@ -343,8 +354,8 @@ fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fra
 #endif
 
     Material material = materials[stage_in.material_id];
-    v4 base_color = texture(sampler2D(textures_2d[nonuniformEXT(material.albedo_texture_id)], texture_2d_sampler), stage_in.uv0) * material.base_color_factor;
-    v4 occlusion_roughness_metallic = texture(sampler2D(textures_2d[nonuniformEXT(material.occlusion_roughness_metallic_texture_id)], texture_2d_sampler), stage_in.uv0);
+    v4 base_color = texture(sampler2D(textures_2d[material.albedo_texture_id], texture_2d_sampler), stage_in.uv0) * material.base_color_factor;
+    v4 occlusion_roughness_metallic = texture(sampler2D(textures_2d[material.occlusion_roughness_metallic_texture_id], texture_2d_sampler), stage_in.uv0);
     f32 roughness = occlusion_roughness_metallic.g * material.roughness_factor;
     f32 metallic = occlusion_roughness_metallic.b * material.metallic_factor;
 
@@ -359,7 +370,7 @@ fragment(Global_Layout) Default_Fragment_Out default_fragment_shader(Default_Fra
     m3x3 tangent_frame_matrix = m3x3(normalize(stage_in.tangent), normalize(stage_in.bitangent), normalize(stage_in.normal));
 
     // TODO: If the model does not have a normal map, it will fetch texture 0 which is a white bitmap. This corresponds to a normal of (1, 1, 1) which is incorrect!
-    v2 normal = texture(sampler2D(textures_2d[nonuniformEXT(material.normal_texture_id)], texture_2d_sampler), stage_in.uv0).rg;
+    v2 normal = texture(sampler2D(textures_2d[material.normal_texture_id], texture_2d_sampler), stage_in.uv0).rg;
     v3 tangent_space_normal;
     tangent_space_normal.xy = normal * 2 - 1;
     tangent_space_normal.z = sqrt(1 - clamp(tangent_space_normal.x * tangent_space_normal.x + tangent_space_normal.y * tangent_space_normal.y, 0, 1));
@@ -667,6 +678,22 @@ pipeline Cluster_Light_Culling_Pipeline
     shaders = [cluster_light_culling_shader];
 };
 
+pipeline Z_Prepass_Pipeline
+{
+    shaders = [depth_only_vertex_shader];
+
+    rasterization_state = {
+        cull_mode  = VK_CULL_MODE_FRONT_BIT,
+        front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE
+    };
+
+    depth_stencil_state = {
+        depth_test_enable  = VK_TRUE,
+        depth_write_enable = VK_TRUE,
+        depth_compare_op   = VK_COMPARE_OP_GREATER_OR_EQUAL
+    };
+};
+
 pipeline Main_Pipeline
 {
     shaders = [default_vertex_shader, default_fragment_shader];
@@ -682,8 +709,8 @@ pipeline Main_Pipeline
 
     depth_stencil_state = {
         depth_test_enable  = VK_TRUE,
-        depth_write_enable = VK_TRUE,
-        depth_compare_op   = VK_COMPARE_OP_GREATER_OR_EQUAL
+        depth_write_enable = VK_FALSE,
+        depth_compare_op   = VK_COMPARE_OP_EQUAL
     };
 };
 

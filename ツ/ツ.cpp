@@ -141,11 +141,11 @@ void game_update(Frame_Parameters* frame_params)
 
     if (frame_params->input.button_space.is_down)
     {
-        frame_params->camera.position += v3{0, 1, 0} * frame_params->camera.rotation * speed * frame_params->delta_time;
+        frame_params->camera.position += v3{0, 1, 0} * speed * frame_params->delta_time;
     }
     if (frame_params->input.button_shift.is_down)
     {
-        frame_params->camera.position += v3{0, -1, 0} * frame_params->camera.rotation * speed * frame_params->delta_time;
+        frame_params->camera.position += v3{0, -1, 0} * speed * frame_params->delta_time;
     }
 #endif
 
@@ -153,8 +153,8 @@ void game_update(Frame_Parameters* frame_params)
     frame_params->camera.projection = perspective_infinite(radians(90.0f), 16.0 / 9.0f, 0.1f);
 
     Light default_light = {LIGHT_TYPE_POINT};
-    default_light.radius = 10;
-    default_light.position = {0, 0, 0};
+    default_light.radius = 2;
+    default_light.position = frame_params->camera.position;
     default_light.color = {1, 1, 1};
     default_light.intensity = 5;
     lights[0] = default_light;
