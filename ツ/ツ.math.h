@@ -23,6 +23,16 @@ internal f32 sqrt(f32 x)
     return _mm_cvtss_f32(_mm_sqrt_ss(_mm_load_ss(&x)));
 }
 
+// TODO: Choose better approximation for log2? This one doesn't seem to be that accurate
+internal f32 log2(f32 x)
+{
+    union { float f; u32 i; } vx = {x};
+
+    f32 y = vx.i;
+    y *= 1.1920928955078125e-7f;
+    return y - 126.94269504f;
+}
+
 // TODO: Choose better approximations for sin, cos and tan?
 internal f32 sin(f32 angle)
 {

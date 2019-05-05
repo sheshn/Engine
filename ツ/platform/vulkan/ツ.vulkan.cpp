@@ -200,7 +200,7 @@ struct Vulkan_Texture
 #define MAX_2D_TEXTURES          2048
 #define MAX_DRAW_CALLS_PER_FRAME 16384
 #define MAX_INSTANCES_PER_FRAME  (MAX_DRAW_CALLS_PER_FRAME * 2)
-#define MAX_LIGHTS               1024
+#define MAX_LIGHTS               2048
 #define MAX_LIGHTS_PER_CLUSTER   64
 
 struct Draw_Instance_Data
@@ -222,14 +222,12 @@ struct Frame_Uniforms
     v4  camera_position;
     v4  voxel_grid_origin_resolution;
     uv4 cluster_grid_resolution_size;
+    v4  cluster_grid_near_far_scale_bias;
 
     v2 inverse_render_dimensions;
 
     f32 voxel_size;
     f32 voxel_ray_step_size;
-
-    f32 camera_near;
-    f32 camera_far;
 
     u32 light_count;
 };
@@ -287,8 +285,10 @@ struct Renderer
 
     VkPipelineLayout global_pipeline_layout;
     VkPipeline       clusterizer_pipeline;
-    VkPipeline       cluster_light_culling_pipeline;
     VkPipeline       z_prepass_pipeline;
+    VkPipeline       update_active_clusters_pipeline;
+    VkPipeline       update_unique_clusters_pipeline;
+    VkPipeline       cluster_light_culling_pipeline;
     VkPipeline       main_pipeline;
     VkPipeline       voxelizer_pipeline;
     VkPipeline       voxelizer_compute_pipeline;
@@ -324,9 +324,14 @@ struct Renderer
     VkFramebuffer       main_framebuffer;
     Vulkan_Texture      main_color_attachment;
     Vulkan_Texture      main_depth_attachment;
+    VkFormat            main_color_attachment_format;
+    VkFormat            main_depth_attachment_format;
 
     Vulkan_Memory_Block cluster_storage_memory_block;
     VkBuffer            cluster_storage_buffer;
+    u64                 cluster_storage_active_clusters_offset;
+    u64                 cluster_storage_unique_clusters_offset;
+    u64                 cluster_storage_light_index_offset;
     b32                 cluster_grid_needs_update;
 
     Vulkan_Memory_Block voxel_storage_memory_block;
@@ -347,8 +352,10 @@ struct Renderer
     VkDescriptorSet       global_descriptor_set;
 
     VkRenderPass main_render_pass;
+    VkRenderPass clusterization_render_pass;
     VkRenderPass voxelization_render_pass;
 
+    VkFramebuffer clusterization_pass_framebuffer;
     VkFramebuffer voxelization_pass_framebuffer;
 
     uv2 render_dimensions;
@@ -538,8 +545,8 @@ internal void recreate_main_framebuffer(uv2 render_dimensions)
 {
     renderer.render_dimensions = render_dimensions;
 
-    VkFormat main_depth_format = VK_FORMAT_D32_SFLOAT;
-    VkFormat main_color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    renderer.main_depth_attachment_format = VK_FORMAT_D32_SFLOAT;
+    renderer.main_color_attachment_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     // TODO: Free all attachment images and image views if they were previously allocated. Either reuse memory block (if new attachments size < old size) or free and reallocate.
     // TODO: Use dedicated allocation?
@@ -553,12 +560,12 @@ internal void recreate_main_framebuffer(uv2 render_dimensions)
     attachment_image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     attachment_image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     {
-        attachment_image_create_info.format = main_depth_format;
-        attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        attachment_image_create_info.format = renderer.main_depth_attachment_format;
+        attachment_image_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.main_depth_attachment.image));
     }
     {
-        attachment_image_create_info.format = main_color_format;
+        attachment_image_create_info.format = renderer.main_color_attachment_format;
         attachment_image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         VK_CALL(vkCreateImage(vulkan_context.device, &attachment_image_create_info, NULL, &renderer.main_color_attachment.image));
     }
@@ -577,13 +584,13 @@ internal void recreate_main_framebuffer(uv2 render_dimensions)
     attachment_image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     attachment_image_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     {
-        attachment_image_view_create_info.format = main_color_format;
+        attachment_image_view_create_info.format = renderer.main_color_attachment_format;
         attachment_image_view_create_info.image = renderer.main_color_attachment.image;
         VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.main_color_attachment.image_view));
     }
     {
         attachment_image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        attachment_image_view_create_info.format = main_depth_format;
+        attachment_image_view_create_info.format = renderer.main_depth_attachment_format;
         attachment_image_view_create_info.image = renderer.main_depth_attachment.image;
         VK_CALL(vkCreateImageView(vulkan_context.device, &attachment_image_view_create_info, NULL, &renderer.main_depth_attachment.image_view));
     }
@@ -613,42 +620,41 @@ internal void recreate_main_framebuffer(uv2 render_dimensions)
     color_attachment_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     color_attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     color_attachment_description.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    color_attachment_description.format = main_color_format;
+    color_attachment_description.format = renderer.main_color_attachment_format;
 
     VkAttachmentDescription depth_attachment_description = color_attachment_description;
-    depth_attachment_description.format = main_depth_format;
+    depth_attachment_description.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth_attachment_description.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_attachment_description.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depth_attachment_description.format = renderer.main_depth_attachment_format;
 
     VkAttachmentDescription attachment_descriptions[] = {color_attachment_description, depth_attachment_description};
     VkAttachmentReference color_attachment_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_attachment_reference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
-    VkSubpassDescription z_prepass = {};
-    z_prepass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    z_prepass.pDepthStencilAttachment = &depth_attachment_reference;
-
-    VkSubpassDescription main_subpass = z_prepass;
+    VkSubpassDescription main_subpass = {};
+    main_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     main_subpass.colorAttachmentCount = 1;
     main_subpass.pColorAttachments = &color_attachment_reference;
+    main_subpass.pDepthStencilAttachment = &depth_attachment_reference;
 
-    VkSubpassDependency main_subpass_dependency = {};
-    main_subpass_dependency.srcSubpass = 0;
-    main_subpass_dependency.dstSubpass = 1;
-    main_subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    main_subpass_dependency.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    main_subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    main_subpass_dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-    main_subpass_dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-    VkSubpassDescription subpasses[] = {z_prepass, main_subpass};
+    VkSubpassDependency dependency = {};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    dependency.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     VkRenderPassCreateInfo render_pass_create_info = {};
     render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_create_info.attachmentCount = array_count(attachment_descriptions);
     render_pass_create_info.pAttachments = attachment_descriptions;
-    render_pass_create_info.subpassCount = array_count(subpasses);
-    render_pass_create_info.pSubpasses = subpasses;
+    render_pass_create_info.subpassCount = 1;
+    render_pass_create_info.pSubpasses = &main_subpass;
     render_pass_create_info.dependencyCount = 1;
-    render_pass_create_info.pDependencies = &main_subpass_dependency;
+    render_pass_create_info.pDependencies = &dependency;
     VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.main_render_pass));
 
     VkImageView attachments[] = {renderer.main_color_attachment.image_view, renderer.main_depth_attachment.image_view};
@@ -670,19 +676,27 @@ internal void recreate_cluster_grid(uv3 cluster_grid_resolution)
 
     u32 cluster_count = renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z;
     u64 cluster_aabb_size = cluster_count * sizeof(v4) * 2;
+    u64 active_clusters_size = cluster_count * sizeof(u32);
+    u64 unique_clusters_size = cluster_count * sizeof(u32) + sizeof(VkDispatchIndirectCommand);
     u64 cluster_light_index_list_size = cluster_count * MAX_LIGHTS_PER_CLUSTER * sizeof(u32) + sizeof(u32);
     u64 cluster_light_info_size = cluster_count * sizeof(u32) * 2;
 
-    u64 cluster_light_index_list_offset = (cluster_aabb_size + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 active_clusters_offset = (cluster_aabb_size + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 unique_clusters_offset = ((active_clusters_offset + active_clusters_size) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
+    u64 cluster_light_index_list_offset = ((unique_clusters_offset + unique_clusters_size) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
     u64 cluster_light_info_offset = ((cluster_light_index_list_offset + cluster_light_index_list_size) + vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment - 1) & -(s64)vulkan_context.physical_device_properties.limits.minStorageBufferOffsetAlignment;
     u64 cluster_storage_buffer_size = cluster_light_info_offset + cluster_light_info_size;
+
+    renderer.cluster_storage_active_clusters_offset = active_clusters_offset;
+    renderer.cluster_storage_unique_clusters_offset = unique_clusters_offset;
+    renderer.cluster_storage_light_index_offset = cluster_light_index_list_offset;
 
     // TODO: Free current cluster grid related resources before recreating new ones!
     // TODO: Use dedicated allocation extension?
     VkBufferCreateInfo buffer_create_info = {};
     buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_create_info.size = cluster_storage_buffer_size;
-    buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     allocate_vulkan_buffer(&buffer_create_info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &renderer.cluster_storage_buffer, &renderer.cluster_storage_memory_block);
 
@@ -695,18 +709,84 @@ internal void recreate_cluster_grid(uv3 cluster_grid_resolution)
     cluster_aabbs_storage_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     cluster_aabbs_storage_write.pBufferInfo = &cluster_aabbs_buffer_info;
 
+    VkDescriptorBufferInfo active_clusters_buffer_info = {renderer.cluster_storage_buffer, active_clusters_offset, active_clusters_size};
+    VkWriteDescriptorSet active_clusters_storage_write = cluster_aabbs_storage_write;
+    active_clusters_storage_write.dstBinding = 10;
+    active_clusters_storage_write.pBufferInfo = &active_clusters_buffer_info;
+
+    VkDescriptorBufferInfo unique_clusters_buffer_info = {renderer.cluster_storage_buffer, unique_clusters_offset, unique_clusters_size};
+    VkWriteDescriptorSet unique_clusters_storage_write = cluster_aabbs_storage_write;
+    unique_clusters_storage_write.dstBinding = 11;
+    unique_clusters_storage_write.pBufferInfo = &unique_clusters_buffer_info;
+
     VkDescriptorBufferInfo cluster_light_index_list_buffer_info = {renderer.cluster_storage_buffer, cluster_light_index_list_offset, cluster_light_index_list_size};
     VkWriteDescriptorSet cluster_light_index_list_storage_write = cluster_aabbs_storage_write;
-    cluster_light_index_list_storage_write.dstBinding = 10;
+    cluster_light_index_list_storage_write.dstBinding = 12;
     cluster_light_index_list_storage_write.pBufferInfo = &cluster_light_index_list_buffer_info;
 
     VkDescriptorBufferInfo cluster_light_info_buffer_info = {renderer.cluster_storage_buffer, cluster_light_info_offset, cluster_light_info_size};
     VkWriteDescriptorSet cluster_light_info_storage_write = cluster_aabbs_storage_write;
-    cluster_light_info_storage_write.dstBinding = 11;
+    cluster_light_info_storage_write.dstBinding = 13;
     cluster_light_info_storage_write.pBufferInfo = &cluster_light_info_buffer_info;
 
-    VkWriteDescriptorSet descriptor_writes[] = {cluster_aabbs_storage_write, cluster_light_index_list_storage_write, cluster_light_info_storage_write};
+    VkWriteDescriptorSet descriptor_writes[] = {cluster_aabbs_storage_write, active_clusters_storage_write, unique_clusters_storage_write, cluster_light_index_list_storage_write, cluster_light_info_storage_write};
     vkUpdateDescriptorSets(vulkan_context.device, array_count(descriptor_writes), descriptor_writes, 0, NULL);
+
+    VkAttachmentDescription depth_attachment_description = {};
+    depth_attachment_description.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth_attachment_description.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_attachment_description.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth_attachment_description.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth_attachment_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth_attachment_description.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depth_attachment_description.format = renderer.main_depth_attachment_format;
+
+    VkAttachmentReference depth_attachment_reference = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription z_prepass = {};
+    z_prepass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    z_prepass.pDepthStencilAttachment = &depth_attachment_reference;
+
+    // NOTE: We are not actually using the subpass input attachment in the shader.
+    // We are just using this to transition the image to READ_ONLY_OPTIMAL (we could use it if we wanted to)
+    VkAttachmentReference depth_input_attachment_reference = {0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkSubpassDescription update_active_clusters_pass = z_prepass;
+    update_active_clusters_pass.pDepthStencilAttachment = NULL;
+    update_active_clusters_pass.inputAttachmentCount = 1;
+    update_active_clusters_pass.pInputAttachments = &depth_input_attachment_reference;
+
+    VkSubpassDependency subpass_dependency = {};
+    subpass_dependency.srcSubpass = 0;
+    subpass_dependency.dstSubpass = 1;
+    subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    subpass_dependency.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    subpass_dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    subpass_dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkSubpassDescription subpasses[] = {z_prepass, update_active_clusters_pass};
+
+    VkRenderPassCreateInfo render_pass_create_info = {};
+    render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_create_info.attachmentCount = 1;
+    render_pass_create_info.pAttachments = &depth_attachment_description;
+    render_pass_create_info.subpassCount = array_count(subpasses);
+    render_pass_create_info.pSubpasses = subpasses;
+    render_pass_create_info.dependencyCount = 1;
+    render_pass_create_info.pDependencies = &subpass_dependency;
+    VK_CALL(vkCreateRenderPass(vulkan_context.device, &render_pass_create_info, NULL, &renderer.clusterization_render_pass));
+
+    VkImageView attachments[] = {renderer.main_depth_attachment.image_view};
+    VkFramebufferCreateInfo framebuffer_create_info = {};
+    framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_create_info.renderPass = renderer.clusterization_render_pass;
+    framebuffer_create_info.width = renderer.render_dimensions.x;
+    framebuffer_create_info.height = renderer.render_dimensions.y;
+    framebuffer_create_info.layers = 1;
+    framebuffer_create_info.attachmentCount = 1;
+    framebuffer_create_info.pAttachments = &renderer.main_depth_attachment.image_view;
+    VK_CALL(vkCreateFramebuffer(vulkan_context.device, &framebuffer_create_info, NULL, &renderer.clusterization_pass_framebuffer));
 
     renderer.cluster_grid_needs_update = true;
 }
@@ -993,7 +1073,9 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
         {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
         {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
-        {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
+        {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
+        {12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT},
+        {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_COMPUTE_BIT}
     };
 
     VkDescriptorBindingFlagsEXT global_binding_flags[array_count(global_layout_bindings)] = {};
@@ -1027,7 +1109,7 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
     {
         {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, renderer.max_2d_textures + 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, MAX_FRAME_RESOURCES}
@@ -1075,14 +1157,16 @@ void init_vulkan_renderer(VkInstance instance, VkSurfaceKHR surface, u32 window_
 
     // NOTE: Ignoring pipeline cache for now
     VK_CALL(vulkan_create_clusterizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.clusterizer_pipeline));
+    VK_CALL(vulkan_create_z_prepass_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.clusterization_render_pass, 0, &renderer.z_prepass_pipeline));
+    VK_CALL(vulkan_create_update_active_clusters_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.clusterization_render_pass, 1, &renderer.update_active_clusters_pipeline));
+    VK_CALL(vulkan_create_update_unique_clusters_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.update_unique_clusters_pipeline));
     VK_CALL(vulkan_create_cluster_light_culling_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.cluster_light_culling_pipeline));
-    VK_CALL(vulkan_create_z_prepass_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 0, &renderer.z_prepass_pipeline));
-    VK_CALL(vulkan_create_main_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 1, &renderer.main_pipeline));
+    VK_CALL(vulkan_create_main_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 0, &renderer.main_pipeline));
     VK_CALL(vulkan_create_final_pass_pipeline(vulkan_context.device, renderer.global_pipeline_layout, vulkan_context.swapchain_render_pass, 0, &renderer.final_pass_pipeline));
     VK_CALL(vulkan_create_voxelizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.voxelization_render_pass, 0, &renderer.voxelizer_pipeline));
     VK_CALL(vulkan_create_voxelizer_compute_pipeline(vulkan_context.device, renderer.global_pipeline_layout, &renderer.voxelizer_compute_pipeline));
-    VK_CALL(vulkan_create_debug_voxel_visualizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 1, &renderer.DEBUG_voxel_visualizer_pipeline));
-    VK_CALL(vulkan_create_debug_cluster_visualizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 1, &renderer.DEBUG_cluster_visualizer_pipeline));
+    VK_CALL(vulkan_create_debug_voxel_visualizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 0, &renderer.DEBUG_voxel_visualizer_pipeline));
+    VK_CALL(vulkan_create_debug_cluster_visualizer_pipeline(vulkan_context.device, renderer.global_pipeline_layout, renderer.main_render_pass, 0, &renderer.DEBUG_cluster_visualizer_pipeline));
 
     VkBufferCreateInfo buffer_create_info = {};
     buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1696,9 +1780,15 @@ void renderer_begin_frame(Frame_Parameters* frame_params)
     renderer.current_render_frame->uniforms->voxel_ray_step_size = 0.5;
 
     renderer.current_render_frame->uniforms->cluster_grid_resolution_size = {renderer.cluster_grid_resolution.x, renderer.cluster_grid_resolution.y, renderer.cluster_grid_resolution.z, (u32)(round_up(renderer.render_dimensions.x / renderer.cluster_grid_resolution.x))};
+
+    // TODO: Pass in as render setting or derive from camera somehow?
+    f32 cluster_near = 0.1;
+    f32 cluster_far = 100;
+    f32 cluster_slice_scale = (f32)renderer.cluster_grid_resolution.z / log2(cluster_far / cluster_near);
+    f32 cluster_slice_bias = -(f32)renderer.cluster_grid_resolution.z * log2(cluster_near) / log2(cluster_far / cluster_near);
+    renderer.current_render_frame->uniforms->cluster_grid_near_far_scale_bias = {cluster_near, cluster_far, cluster_slice_scale, cluster_slice_bias};
+
     renderer.current_render_frame->uniforms->camera_position = {frame_params->camera.position.x, frame_params->camera.position.y, frame_params->camera.position.z};
-    renderer.current_render_frame->uniforms->camera_near = 0.1;
-    renderer.current_render_frame->uniforms->camera_far = 100;
 }
 
 void renderer_draw_buffer(Renderer_Buffer buffer, u32 index_offset, u32 index_count, Renderer_Buffer material, Renderer_Buffer xform)
@@ -1766,10 +1856,6 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
         VK_CALL(vkBeginCommandBuffer(frame_resources->graphics_compute_command_buffer, &command_buffer_begin_info));
 
-        VkClearValue clear_values[2] = {};
-        clear_values[0].color = {0.0f, 0.0f, 0.0f, 0.0f};
-        clear_values[1].depthStencil = {0.0f, 0};
-
         VkDescriptorSet descriptor_sets[] = {frame_resources->descriptor_set, renderer.global_descriptor_set};
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.global_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
         vkCmdBindDescriptorSets(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.global_pipeline_layout, 0, array_count(descriptor_sets), descriptor_sets, 0, NULL);
@@ -1783,6 +1869,10 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
         VkRenderPassBeginInfo render_pass_begin_info = {};
         render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 
+        VkDispatchIndirectCommand clear_dispatch_indirect_command = {0, 1, 1};
+        vkCmdUpdateBuffer(frame_resources->graphics_compute_command_buffer, renderer.cluster_storage_buffer, renderer.cluster_storage_unique_clusters_offset, sizeof(VkDispatchIndirectCommand), &clear_dispatch_indirect_command);
+        vkCmdUpdateBuffer(frame_resources->graphics_compute_command_buffer, renderer.cluster_storage_buffer, renderer.cluster_storage_light_index_offset, sizeof(u32), &clear_dispatch_indirect_command);
+
         // TODO: We don't need to do the clusterization pass every frame, only when the camera parameters change!
         // NOTE: Clusterization pass
         {
@@ -1790,10 +1880,78 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             vkCmdDispatch(frame_resources->graphics_compute_command_buffer, renderer.cluster_grid_resolution.x, renderer.cluster_grid_resolution.y, renderer.cluster_grid_resolution.z);
         }
 
+        // NOTE: Z-prepass and update active clusters render pass
+        {
+            VkClearValue clear_value = {0.0f, 0};
+
+            render_pass_begin_info.renderPass = renderer.clusterization_render_pass;
+            render_pass_begin_info.framebuffer = renderer.clusterization_pass_framebuffer;
+            render_pass_begin_info.renderArea.offset = {0, 0};
+            render_pass_begin_info.renderArea.extent = {renderer.render_dimensions.x, renderer.render_dimensions.y};
+            render_pass_begin_info.clearValueCount = 1;
+            render_pass_begin_info.pClearValues = &clear_value;
+            vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+            VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
+            vkCmdSetViewport(frame_resources->graphics_compute_command_buffer, 0, 1, &viewport);
+
+            VkRect2D scissor = render_pass_begin_info.renderArea;
+            vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
+
+            {
+                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.z_prepass_pipeline);
+                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdNextSubpass(frame_resources->graphics_compute_command_buffer, VK_SUBPASS_CONTENTS_INLINE);
+            }
+
+            {
+                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.update_active_clusters_pipeline);
+                vkCmdDraw(frame_resources->graphics_compute_command_buffer, 3, 1, 0, 0);
+            }
+            vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
+        }
+
         // NOTE: Light culling pass
         {
+            VkBufferMemoryBarrier active_clusters_memory_barrier = {};
+            active_clusters_memory_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            active_clusters_memory_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            active_clusters_memory_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            active_clusters_memory_barrier.buffer = renderer.cluster_storage_buffer;
+            active_clusters_memory_barrier.offset = renderer.cluster_storage_active_clusters_offset;
+            active_clusters_memory_barrier.size = renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z * sizeof(u32);
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &active_clusters_memory_barrier, 0, NULL);
+
+            VkBufferMemoryBarrier clear_cluster_dispatch_indirect_memory_barrier = active_clusters_memory_barrier;
+            clear_cluster_dispatch_indirect_memory_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            clear_cluster_dispatch_indirect_memory_barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            clear_cluster_dispatch_indirect_memory_barrier.offset = renderer.cluster_storage_unique_clusters_offset;
+            clear_cluster_dispatch_indirect_memory_barrier.size = sizeof(VkDispatchIndirectCommand);
+
+            VkBufferMemoryBarrier clear_cluster_light_index_memory_barrier = clear_cluster_dispatch_indirect_memory_barrier;
+            clear_cluster_light_index_memory_barrier.offset = renderer.cluster_storage_light_index_offset;
+            clear_cluster_light_index_memory_barrier.size = sizeof(u32);
+
+            VkBufferMemoryBarrier clear_cluster_values_memory_barriers[] = {clear_cluster_dispatch_indirect_memory_barrier, clear_cluster_light_index_memory_barrier};
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, array_count(clear_cluster_values_memory_barriers), clear_cluster_values_memory_barriers, 0, NULL);
+
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.update_unique_clusters_pipeline);
+            vkCmdDispatch(frame_resources->graphics_compute_command_buffer, (u32)round_up(renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z / (f32)1024), 1, 1);
+
+            VkBufferMemoryBarrier indirect_dispatch_memory_barrier = active_clusters_memory_barrier;
+            indirect_dispatch_memory_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            indirect_dispatch_memory_barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+            indirect_dispatch_memory_barrier.offset = renderer.cluster_storage_unique_clusters_offset;
+            indirect_dispatch_memory_barrier.size = sizeof(VkDispatchIndirectCommand);
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, NULL, 1, &indirect_dispatch_memory_barrier, 0, NULL);
+
+            VkBufferMemoryBarrier unique_clusters_memory_barrier = active_clusters_memory_barrier;
+            unique_clusters_memory_barrier.offset = renderer.cluster_storage_unique_clusters_offset + sizeof(VkDispatchIndirectCommand);
+            unique_clusters_memory_barrier.size = renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z * sizeof(u32);
+            vkCmdPipelineBarrier(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &unique_clusters_memory_barrier, 0, NULL);
+
             vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, renderer.cluster_light_culling_pipeline);
-            vkCmdDispatch(frame_resources->graphics_compute_command_buffer, 1, 1, renderer.cluster_grid_resolution.z / 4);
+            vkCmdDispatchIndirect(frame_resources->graphics_compute_command_buffer, renderer.cluster_storage_buffer, renderer.cluster_storage_unique_clusters_offset);
         }
 
     #if 0
@@ -1901,12 +2059,12 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
 
         // NOTE: Main render pass
         {
+            VkClearValue clear_value = {0.07f, 0.07f, 0.07f, 0.07f};
+
             render_pass_begin_info.renderPass = renderer.main_render_pass;
             render_pass_begin_info.framebuffer = renderer.main_framebuffer;
-            render_pass_begin_info.renderArea.offset = {0, 0};
-            render_pass_begin_info.renderArea.extent = {renderer.render_dimensions.x, renderer.render_dimensions.y};
-            render_pass_begin_info.clearValueCount = array_count(clear_values);
-            render_pass_begin_info.pClearValues = clear_values;
+            render_pass_begin_info.clearValueCount = 1;
+            render_pass_begin_info.pClearValues = &clear_value;
             vkCmdBeginRenderPass(frame_resources->graphics_compute_command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
             VkViewport viewport = {(f32)render_pass_begin_info.renderArea.offset.x, (f32)render_pass_begin_info.renderArea.offset.y, (f32)render_pass_begin_info.renderArea.extent.width, (f32)render_pass_begin_info.renderArea.extent.height, 0, 1};
@@ -1915,32 +2073,22 @@ void renderer_submit_frame(Frame_Parameters* frame_params)
             VkRect2D scissor = render_pass_begin_info.renderArea;
             vkCmdSetScissor(frame_resources->graphics_compute_command_buffer, 0, 1, &scissor);
 
-            // NOTE: Z-prepass
+            vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.main_pipeline);
+            vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
+
+            if (renderer.draw_debug_cluster_grid)
             {
-                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.z_prepass_pipeline);
-                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
-                vkCmdNextSubpass(frame_resources->graphics_compute_command_buffer, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_cluster_visualizer_pipeline);
+                vkCmdDraw(frame_resources->graphics_compute_command_buffer, renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z, 1, 0, 0);
             }
 
-            // NOTE: Main subpass
-            {
-                vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.main_pipeline);
-                vkCmdDrawIndexedIndirectCountKHR(frame_resources->graphics_compute_command_buffer, renderer.frame_resources_buffer, frame_resources->draw_command_offset, renderer.frame_resources_buffer, frame_resources->draw_call_count_offset, MAX_DRAW_CALLS_PER_FRAME, sizeof(VkDrawIndexedIndirectCommand));
-
-                if (renderer.draw_debug_cluster_grid)
-                {
-                    vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_cluster_visualizer_pipeline);
-                    vkCmdDraw(frame_resources->graphics_compute_command_buffer, renderer.cluster_grid_resolution.x * renderer.cluster_grid_resolution.y * renderer.cluster_grid_resolution.z, 1, 0, 0);
-                }
-
-                #if 0
+            #if 0
                 if (renderer.draw_debug_voxel_grid)
                 {
                     vkCmdBindPipeline(frame_resources->graphics_compute_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.DEBUG_voxel_visualizer_pipeline);
                     vkCmdDraw(frame_resources->graphics_compute_command_buffer, renderer.voxel_grid_resolution.x * renderer.voxel_grid_resolution.y * renderer.voxel_grid_resolution.z, 1, 0, 0);
                 }
-                #endif
-            }
+            #endif
 
             vkCmdEndRenderPass(frame_resources->graphics_compute_command_buffer);
         }

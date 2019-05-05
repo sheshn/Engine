@@ -38,8 +38,22 @@ void game_init(Game_State* game_state)
 b32 started_down = false;
 quat camera_reference_frame = {0, 0, 0, 1};
 
-Light lights[100];
-u32   light_count = 1;
+Light lights[100] = {
+    {
+        LIGHT_TYPE_POINT,
+        {},
+        v4{0, 1, -0.5, 2},
+        v4{1, 1, 1, 5}
+    },
+    {
+        LIGHT_TYPE_POINT,
+        {},
+        v4{0, 4, -0.5, 3},
+        v4{1, 1, 1, 50}
+    }
+};
+u32 light_count = 3;
+f32 light_velocity = 1;
 
 void game_update(Frame_Parameters* frame_params)
 {
@@ -152,17 +166,20 @@ void game_update(Frame_Parameters* frame_params)
     frame_params->camera.view = quat_to_m4x4(conjugate(frame_params->camera.rotation)) * translate(identity(), -1 * frame_params->camera.position);
     frame_params->camera.projection = perspective_infinite(radians(90.0f), 16.0 / 9.0f, 0.1f);
 
-    Light default_light = {LIGHT_TYPE_POINT};
-    default_light.radius = 2;
-    default_light.position = frame_params->camera.position;
-    default_light.color = {1, 1, 1};
-    default_light.intensity = 5;
-    lights[0] = default_light;
+    lights[0].position.x += 1.5 * frame_params->delta_time * light_velocity;
+    lights[1].position.x += 1.5 * frame_params->delta_time * light_velocity;
+    if (lights[0].position.x > 11 || lights[0].position.x < -11)
+    {
+        light_velocity *= -1;
+    }
+
+    lights[2] = lights[0];
+    lights[2].position = frame_params->camera.position;
 
     if (frame_params->input.button_t.is_pressed)
     {
         Light* light = lights + light_count++;
-        *light = default_light;
+        *light = lights[0];
         light->position = frame_params->camera.position;
 
         frame_params->DEBUG_camera.view = translate(identity(), frame_params->camera.position) * quat_to_m4x4(frame_params->camera.rotation);
